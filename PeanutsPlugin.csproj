@@ -1,0 +1,24 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+
+  <PropertyGroup>
+    <Version>1.0.0.0</Version>
+    <Author>Irie</Author>
+    <Name>Peanuts</Name>
+    <InternalName>PeanutsPlugin</InternalName>
+    <Punchline>Tracks salvaged-jewelry and other stuff counts per character/world.</Punchline>
+    <Description>Scrape together the existing pieces of jewelry and eagerly note down the quantity and current owner in Tataru's small notebook.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ClosedXML" Version="0.104.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="images\icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>images\icon.png</Link>
+    </None>
+  </ItemGroup>
+
+</Project>
