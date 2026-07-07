@@ -69,21 +69,43 @@ public unsafe class InventoryScanner
                 if (slot == null || slot->ItemId == 0)
                     continue;
 
+                // Im Spielspeicher gibt es DREI ID-Varianten desselben Items:
+                //   Basis-ItemId                (NQ)
+                //   Basis-ItemId + 500.000      (Sammlerstück / Collectable)
+                //   Basis-ItemId + 1.000.000    (HQ)
+                // Sammlerstücke wurden bisher NICHT erkannt - genau das war
+                // die Ursache für "fehlende" Zählungen bei Sammel-Materialien
+                // wie Sicheltanne/Karmizit-Erz/Vivianit/Cloestin. Sie werden
+                // jetzt der NQ-Zählung zugeschlagen (eigene Stapelgröße/
+                // Preislogik existiert für Sammlerstücke nicht sinnvoll, da
+                // sie nicht an NPCs verkauft werden - für die Stückzahl- und
+                // Slot-Erfassung zählen sie aber selbstverständlich mit).
+                var rawId = slot->ItemId;
+                uint baseId;
+                var isHq = false;
+
+                if (rawId >= 1_000_000)
+                {
+                    baseId = rawId - 1_000_000;
+                    isHq = true;
+                }
+                else if (rawId >= 500_000)
+                {
+                    baseId = rawId - 500_000; // Sammlerstück
+                }
+                else
+                {
+                    baseId = rawId;
+                }
+
                 foreach (var item in TrackedItems.All)
                 {
-                    if (!item.Enabled)
+                    if (!item.Enabled || item.ItemId != baseId)
                         continue;
 
-                    if (slot->ItemId == item.ItemId)
-                    {
-                        counts.TryGetValue(item.Key, out var current);
-                        counts[item.Key] = current + slot->Quantity;
-                    }
-                    else if (item.CanBeHq && slot->ItemId == item.ItemId + 1_000_000)
-                    {
-                        counts.TryGetValue(item.HqKey, out var current);
-                        counts[item.HqKey] = current + slot->Quantity;
-                    }
+                    var key = isHq && item.CanBeHq ? item.HqKey : item.Key;
+                    counts.TryGetValue(key, out var current);
+                    counts[key] = current + slot->Quantity;
                 }
             }
         }
