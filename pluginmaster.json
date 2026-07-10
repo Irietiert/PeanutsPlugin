@@ -11,7 +11,8 @@
     "DownloadLinkInstall": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.2.0.0/PeanutsPlugin.zip",
     "DownloadLinkUpdate": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.2.0.0/PeanutsPlugin.zip",
     "DownloadLinkTesting": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.2.0.0/PeanutsPlugin.zip",
-    "DalamudApiLevel": 13,
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
     "IsHide": false
   }
 ]
