@@ -38,7 +38,7 @@ public static class ChartHelpers
         var total = segments.Sum(s => s.Value);
         if (total <= 0f)
         {
-            ImGui.TextDisabled("Keine Daten für das Diagramm.");
+            ImGui.TextDisabled(Loc.Get("Keine Daten für das Diagramm.", "No data for the chart."));
             return;
         }
 
@@ -64,8 +64,12 @@ public static class ChartHelpers
             startAngle = endAngle;
         }
 
-        // Donut-Loch: innerer Kreis in fester dunkler Hintergrundfarbe (passend zum Theme).
-        var bgColor = ImGui.ColorConvertFloat4ToU32(new Vector4(0.06f, 0.06f, 0.06f, 1f));
+        // Donut-Loch: innerer Kreis in der Theme-Hintergrundfarbe, damit es
+        // sowohl in dunklen als auch in hellen Dalamud-Themes zum Hintergrund
+        // passt (früher fest dunkelgrau -> heller Fleck in hellen Themes).
+        // Über GetColorU32 (kein Zeiger, kein unsafe nötig); Alpha per
+        // 0xFF000000 auf voll gesetzt, damit das Diagramm nicht durchscheint.
+        var bgColor = ImGui.GetColorU32(ImGuiCol.WindowBg) | 0xFF000000u;
         drawList.AddCircleFilled(center, radius * 0.55f, bgColor, 64);
 
         ImGui.Dummy(new Vector2(size, size));

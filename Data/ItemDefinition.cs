@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Dalamud.Game;
 
 namespace PeanutsPlugin.Data;
@@ -105,7 +104,4 @@ public static class TrackedItems
         new ItemDefinition { Key = "ExOhrring",   NameDe = "Extravaganter geborgener Ohrring",  NpcSalePriceNq = 30000 },
         new ItemDefinition { Key = "ExHalsband",  NameDe = "Extravagantes geborgenes Halsband", NpcSalePriceNq = 34500 },
     };
-
-    public static List<ItemDefinition> CloneList(IEnumerable<ItemDefinition> source) =>
-        source.Select(i => i.Clone()).ToList();
 }

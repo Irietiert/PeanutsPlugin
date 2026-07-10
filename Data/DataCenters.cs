@@ -51,7 +51,7 @@ public static class DataCenters
         ["Sophia"] = "Materia", ["Zurvan"] = "Materia",
     };
 
-    /// <summary>Liefert das Datenzentrum zu einer Welt, oder "Unbekannt" falls nicht in der Liste.</summary>
+    /// <summary>Liefert das Datenzentrum zu einer Welt, oder "Unbekannt"/"Unknown" falls nicht in der Liste.</summary>
     public static string GetDataCenter(string worldName) =>
-        WorldToDataCenter.TryGetValue(worldName, out var dc) ? dc : "Unbekannt";
+        WorldToDataCenter.TryGetValue(worldName, out var dc) ? dc : Loc.Get("Unbekannt", "Unknown");
 }

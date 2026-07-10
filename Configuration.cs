@@ -23,6 +23,22 @@ public class Configuration : IPluginConfiguration
     // Datierte Snapshots, angelegt über den "Save"-Button, für den Verlauf-Tab.
     public List<HistoryEntry> History { get; set; } = new();
 
+    // Verlaufseinträge, die älter als so viele Tage sind, werden beim nächsten
+    // Snapshot automatisch entfernt. Bewusst großzügig (> 1 Jahr), damit der
+    // längste im UI wählbare Zeitraum (1 Jahr) vollständig abgedeckt bleibt.
+    public const int HistoryRetentionDays = 400;
+
+    /// <summary>
+    /// Entfernt Verlaufseinträge, die älter als <see cref="HistoryRetentionDays"/>
+    /// sind, damit die gespeicherte Datei nicht unbegrenzt wächst. Wird nach
+    /// dem Anlegen neuer Snapshots aufgerufen.
+    /// </summary>
+    public void PruneHistory()
+    {
+        var cutoff = DateTime.Now.AddDays(-HistoryRetentionDays);
+        History.RemoveAll(h => h.Timestamp < cutoff);
+    }
+
     // Vom Nutzer im "Edit"-Tab gesetzter Export-ORDNER (nicht mehr der volle Dateiname -
     // die Datei heißt jetzt immer "Tataru's Note.csv" / ".xlsx").
     // Leer = Standardordner im Plugin-Konfigurationsordner wird verwendet.
@@ -46,6 +62,11 @@ public class Configuration : IPluginConfiguration
     // Manuelle Sprachüberschreibung im "Edit"-Tab, unabhängig von der
     // Client-Sprache: "Auto" (Standard, folgt der Client-Sprache), "German", "English".
     public string LanguageOverride { get; set; } = "Auto";
+
+    // Startet der Scanner nach dem Login automatisch? Im "Edit"-Tab umschaltbar.
+    // Standard true (bisheriges Verhalten). Auf false gesetzt bleibt das Tool
+    // nach dem Login gestoppt, bis der Nutzer manuell auf "Start" klickt.
+    public bool AutoStartOnLogin { get; set; } = true;
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
@@ -110,8 +131,6 @@ public class Configuration : IPluginConfiguration
     // --- Zusammenführung über alle Welten ---
 
     public long GlobalTotalGil() => Worlds.Values.Sum(w => w.TotalGil());
-
-    public int GlobalTotalQuantity() => Worlds.Values.Sum(w => w.TotalQuantity());
 
     /// <summary>
     /// Stacks über alle Welten: für jede Item-Variante (NQ/HQ getrennt) wird

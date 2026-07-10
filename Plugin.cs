@@ -51,6 +51,7 @@ public sealed class Plugin : IDalamudPlugin
     private const int ScanIntervalFramesIdle = 300; // ~5s, danach im Hintergrund (z.B. für U-Boot-Änderungen)
     private int currentScanIntervalFrames = ScanIntervalFramesFast;
     private bool hasAnnouncedComplete;
+    private bool hasAnnouncedDuplicate;
 
     private bool autoStartPending;
     private int autoStartDelayFrames;
@@ -100,12 +101,12 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.AddHandler("/peanutsres", new CommandInfo(OnResetCommand)
         {
             HelpMessage = Loc.Get(
-                "Setzt das komplette Overlay zurück (alle Welten/Charaktere/Verlauf).",
-                "Resets the whole overlay (all worlds/characters/history)."),
+                "Setzt das komplette Overlay zurück - zur Bestätigung: /peanutsres confirm (alle Welten/Charaktere/Verlauf).",
+                "Resets the whole overlay - to confirm: /peanutsres confirm (all worlds/characters/history)."),
         });
 
         PluginInterface.UiBuilder.Draw += DrawUi;
-        PluginInterface.UiBuilder.OpenMainUi += () => mainWindow.IsOpen = true;
+        PluginInterface.UiBuilder.OpenMainUi += OnOpenMainUi;
 
         // ItemIds erst auflösen, sobald die Spieldaten sicher geladen sind.
         Framework.RunOnFrameworkThread(() => ItemIdResolver.ResolveAll(DataManager, Log));
@@ -119,8 +120,15 @@ public sealed class Plugin : IDalamudPlugin
             OnLogin();
     }
 
+    private void OnOpenMainUi() => mainWindow.IsOpen = true;
+
     private void OnLogin()
     {
+        // Auto-Start kann im Edit-Tab abgeschaltet werden - dann bleibt das
+        // Tool nach dem Login gestoppt, bis der Nutzer manuell startet.
+        if (!Configuration.AutoStartOnLogin)
+            return;
+
         autoStartPending = true;
         autoStartDelayFrames = AutoStartDelayFramesInitial;
     }
@@ -141,11 +149,6 @@ public sealed class Plugin : IDalamudPlugin
         };
     }
 
-    /// <summary>
-    /// Sucht im (deutschen) Item-Sheet nach Items, deren Name den Suchtext
-    /// enthält - für den "+"-Dialog im Item-Tab. Ergebnisse sind bewusst
-    /// limitiert, damit die Liste übersichtlich bleibt.
-    /// </summary>
     /// <summary>
     /// Sucht im (deutschen) Item-Sheet nach Items, deren Name den Suchtext
     /// enthält - für den "+"-Dialog im Item-Tab. Liefert direkt alles, was
@@ -275,10 +278,18 @@ public sealed class Plugin : IDalamudPlugin
     public string BuildSummaryText()
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"📊 Peanuts Übersicht ({DateTime.Now:dd.MM.yyyy HH:mm})");
-        sb.AppendLine($"Umsatz aller Welten: {Configuration.GlobalTotalGil():N0} Gil");
-        sb.AppendLine($"Stacks aller Welten: {Configuration.GlobalTotalStacks()}");
-        sb.AppendLine($"Gezählte Charaktere: {Configuration.GlobalCharacterCount()}");
+        sb.AppendLine(Loc.Get(
+            $"📊 Peanuts Übersicht ({DateTime.Now:dd.MM.yyyy HH:mm})",
+            $"📊 Peanuts overview ({DateTime.Now:MM/dd/yyyy HH:mm})"));
+        sb.AppendLine(Loc.Get(
+            $"Umsatz aller Welten: {Configuration.GlobalTotalGil():N0} Gil",
+            $"Total across all worlds: {Configuration.GlobalTotalGil():N0} Gil"));
+        sb.AppendLine(Loc.Get(
+            $"Stacks aller Welten: {Configuration.GlobalTotalStacks()}",
+            $"Stacks across all worlds: {Configuration.GlobalTotalStacks()}"));
+        sb.AppendLine(Loc.Get(
+            $"Gezählte Charaktere: {Configuration.GlobalCharacterCount()}",
+            $"Characters counted: {Configuration.GlobalCharacterCount()}"));
         sb.AppendLine();
 
         foreach (var world in Configuration.Worlds.Values.OrderBy(w => w.Name))
@@ -286,8 +297,9 @@ public sealed class Plugin : IDalamudPlugin
             if (world.Characters.Count == 0)
                 continue;
 
-            sb.AppendLine($"— {world.Name} ({DataCenters.GetDataCenter(world.Name)}): " +
-                          $"{world.TotalGil():N0} Gil ({world.TotalStacks()} Stacks)");
+            sb.AppendLine(Loc.Get(
+                $"— {world.Name} ({DataCenters.GetDataCenter(world.Name)}): {world.TotalGil():N0} Gil ({world.TotalStacks()} Stacks)",
+                $"— {world.Name} ({DataCenters.GetDataCenter(world.Name)}): {world.TotalGil():N0} Gil ({world.TotalStacks()} stacks)"));
         }
 
         return sb.ToString();
@@ -297,16 +309,30 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnStopCommand(string command, string args) => StopScanner();
 
-    private void OnResetCommand(string command, string args) => ResetAll();
+    private void OnResetCommand(string command, string args)
+    {
+        // Im Chat gibt es kein Bestätigungs-Popup wie beim UI-Button, deshalb
+        // muss der Reset per Argument bestätigt werden: "/peanutsres confirm".
+        if (!string.Equals(args?.Trim(), "confirm", StringComparison.OrdinalIgnoreCase))
+        {
+            ChatGui.Print(Loc.Get(
+                "[Peanuts] Achtung: /peanutsres setzt ALLE Werte auf 0 (der Verlauf wird vorher gesichert). Zum Bestätigen: /peanutsres confirm",
+                "[Peanuts] Warning: /peanutsres resets ALL values to 0 (history is saved first). To confirm: /peanutsres confirm"));
+            return;
+        }
+
+        ResetAll();
+    }
 
     private void OnExportCommand(string command, string args) => ExportData();
 
-    public void StartScanner()
+    public void StartScanner(bool silent = false)
     {
         var localPlayer = ObjectTable.LocalPlayer;
         if (!ClientState.IsLoggedIn || localPlayer == null)
         {
-            ChatGui.PrintError(Loc.Get("[Peanuts] Kein Charakter eingeloggt.", "[Peanuts] No character logged in."));
+            if (!silent)
+                ChatGui.PrintError(Loc.Get("[Peanuts] Kein Charakter eingeloggt.", "[Peanuts] No character logged in."));
             return;
         }
 
@@ -324,10 +350,12 @@ public sealed class Plugin : IDalamudPlugin
 
         LastScanComplete = false;
         hasAnnouncedComplete = false;
+        hasAnnouncedDuplicate = false;
         currentScanIntervalFrames = ScanIntervalFramesFast;
         ScannerRunning = true;
         framesSinceLastScan = 0;
-        ChatGui.Print(Loc.Get("[Peanuts] Tool gestartet.", "[Peanuts] Tool started."));
+        if (!silent)
+            ChatGui.Print(Loc.Get("[Peanuts] Tool gestartet.", "[Peanuts] Tool started."));
 
         // Sofortiger, synchroner Scan direkt beim Klick - Items UND Slots
         // werden dadurch garantiert zeitgleich erfasst, statt erst auf den
@@ -353,7 +381,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 autoStartPending = false;
                 if (ClientState.IsLoggedIn && ObjectTable.LocalPlayer != null && !ScannerRunning)
-                    StartScanner();
+                    StartScanner(silent: true);
             }
         }
 
@@ -399,23 +427,69 @@ public sealed class Plugin : IDalamudPlugin
 
         var result = scanner.ScanInventory();
 
+        // Nur bei einer echten Änderung wird am Ende auf die Platte
+        // geschrieben - sonst würde jeder Idle-Tick (~5s) die komplette
+        // (mit dem Verlauf wachsende) JSON unnötig neu serialisieren.
+        var changed = false;
+
+        // --- Hauptinventar ---
         foreach (var kv in result.Inventory)
+        {
+            if (activeCharacter.ItemCounts.GetValueOrDefault(kv.Key) != kv.Value)
+                changed = true;
             activeCharacter.ItemCounts[kv.Key] = kv.Value;
-        foreach (var kv in result.Saddlebag)
-            activeCharacter.SaddlebagCounts[kv.Key] = kv.Value;
+        }
 
-        // Doppelfund: Variant-Key ist SOWOHL im Hauptinventar ALS AUCH in der
-        // Satteltasche mit Stückzahl > 0 vorhanden.
-        activeCharacter.DuplicateFindKeys = result.Inventory
-            .Where(kv => kv.Value > 0 && result.Saddlebag.TryGetValue(kv.Key, out var bagQty) && bagQty > 0)
-            .Select(kv => kv.Key)
-            .ToHashSet();
-
+        if (activeCharacter.UsedSlots != result.UsedInventorySlots)
+            changed = true;
         activeCharacter.UsedSlots = result.UsedInventorySlots;
-        activeCharacter.UsedSaddlebagSlots = result.UsedSaddlebagSlots;
+
+        // --- Satteltasche ---
+        // Nur übernehmen, wenn die Satteltasche tatsächlich geladen war.
+        // Vor dem ersten Öffnen (z.B. direkt nach dem Login) sind ihre
+        // Container leer/nicht vorhanden - würden wir dann blind 0 schreiben,
+        // ginge der zuletzt bekannte Stand verloren. Stattdessen behalten wir
+        // in diesem Fall die alten Werte und lassen die Anzeige auf "?" stehen.
+        if (result.SaddlebagLoaded)
+        {
+            foreach (var kv in result.Saddlebag)
+            {
+                if (activeCharacter.SaddlebagCounts.GetValueOrDefault(kv.Key) != kv.Value)
+                    changed = true;
+                activeCharacter.SaddlebagCounts[kv.Key] = kv.Value;
+            }
+
+            if (activeCharacter.UsedSaddlebagSlots != result.UsedSaddlebagSlots)
+                changed = true;
+            activeCharacter.UsedSaddlebagSlots = result.UsedSaddlebagSlots;
+
+            if (activeCharacter.SaddlebagCapacity != result.SaddlebagCapacity)
+                changed = true;
+            activeCharacter.SaddlebagCapacity = result.SaddlebagCapacity;
+
+            // Doppelfund auf ITEM-Ebene: ein Item gilt als Doppelfund, sobald
+            // IRGENDEINE seiner Varianten (NQ/HQ) im Hauptinventar UND (dieselbe
+            // oder eine andere Variante) in der Satteltasche liegt - auch über
+            // verschiedene Qualitäten hinweg. Nur sinnvoll, wenn die Satteltasche
+            // geladen ist; sonst bleibt der letzte bekannte Doppelfund-Stand stehen.
+            var newDuplicateKeys = TrackedItems.All
+                .Where(item => item.Enabled
+                    && item.Variants().Any(v => result.Inventory.TryGetValue(v.CountKey, out var iq) && iq > 0)
+                    && item.Variants().Any(v => result.Saddlebag.TryGetValue(v.CountKey, out var bq) && bq > 0))
+                .Select(item => item.Key)
+                .ToHashSet();
+
+            if (!newDuplicateKeys.SetEquals(activeCharacter.DuplicateFindKeys))
+                changed = true;
+            activeCharacter.DuplicateFindKeys = newDuplicateKeys;
+        }
+
         activeCharacter.LastScannedAt = DateTime.Now;
 
-        Configuration.Save();
+        if (changed)
+            Configuration.Save();
+
+        var hasDuplicateNow = activeCharacter.DuplicateFindKeys.Count > 0;
 
         if (activeCharacter.IsComplete() && !hasAnnouncedComplete)
         {
@@ -429,7 +503,23 @@ public sealed class Plugin : IDalamudPlugin
             LastCompletedWorld = CurrentWorldName;
             LastCompletedCharacter = CurrentCharacterName;
 
-            PrintCompletionMessage(TotalSearchableVariantCount(), activeCharacter.DuplicateFindKeys.Count > 0);
+            hasAnnouncedDuplicate = hasDuplicateNow;
+            PrintCompletionMessage(TotalSearchableVariantCount(), hasDuplicateNow);
+        }
+        else if (hasDuplicateNow && !hasAnnouncedDuplicate)
+        {
+            // Ein Doppelfund kann auch NACH der ersten "Erfassung abgeschlossen"-
+            // Meldung auftauchen (z.B. wenn erst später ein Item zusätzlich in
+            // die Satteltasche gelegt wird) - dafür braucht es eine eigene,
+            // von hasAnnouncedComplete unabhängige Meldung.
+            hasAnnouncedDuplicate = true;
+            PrintCompletionMessage(TotalSearchableVariantCount(), true);
+        }
+        else if (!hasDuplicateNow)
+        {
+            // Erlaubt eine erneute Meldung, falls der Doppelfund behoben
+            // (z.B. Item aus der Satteltasche entfernt) und später erneut auftritt.
+            hasAnnouncedDuplicate = false;
         }
     }
 
@@ -514,6 +604,7 @@ public sealed class Plugin : IDalamudPlugin
             return 0;
         }
 
+        Configuration.PruneHistory();
         Configuration.Save();
         if (!silent)
             ChatGui.Print(Loc.Get(
@@ -623,6 +714,28 @@ public sealed class Plugin : IDalamudPlugin
             }
         }
 
+        // Reset-Markierung: ein Null-Eintrag pro Charakter mit eigenem
+        // Zeitstempel (leicht nach dem Vor-Reset-Snapshot). Dadurch zeigt der
+        // Umsatzverlauf den Abfall auf 0 sichtbar an (rote "Reset (0)"-Zeile);
+        // der Vor-Reset-Stand bleibt über den vorherigen Snapshot erhalten.
+        var resetTime = DateTime.Now;
+        foreach (var world in Configuration.Worlds.Values)
+        {
+            foreach (var character in world.Characters)
+            {
+                Configuration.History.Add(new HistoryEntry
+                {
+                    Timestamp = resetTime,
+                    World = world.Name,
+                    Character = character.Name,
+                    ItemCounts = new Dictionary<string, int>(),
+                    TotalGil = 0,
+                    IsReset = true,
+                });
+            }
+        }
+
+        Configuration.PruneHistory();
         Configuration.Save();
 
         ScannerRunning = false;
@@ -730,17 +843,19 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// Wird nach jeder Änderung im Edit-Tab -> "Charakter" (Sichtbarkeits-
-    /// Schalter) aufgerufen: sichert einen Snapshot, exportiert, und scannt
-    /// den aktuell aktiven Charakter neu, damit die Änderung sofort überall
-    /// sichtbar wird.
+    /// Wird nach einer Änderung im Edit-Tab -> "Charakter" (Sichtbarkeits-
+    /// Schalter, Wiederherstellen) aufgerufen. Eine Sichtbarkeits-Änderung ist
+    /// eine reine Anzeige-Einstellung: sie wird nur PERSISTIERT. Sie erzeugt
+    /// bewusst KEINEN History-Snapshot und schreibt KEINE Exportdateien mehr -
+    /// das hatte früher bei jedem Klick den Verlauf vollgeschrieben und (oft
+    /// gesperrte) Exportdateien angefasst. Der Effekt ist trotzdem sofort
+    /// sichtbar, weil das Overlay die Aggregation bei jedem Frame neu aus den
+    /// Live-Daten berechnet. Snapshots/Exporte laufen weiterhin ganz normal
+    /// über die "Save"-/"Export"-Buttons bzw. /peanutsex.
     /// </summary>
     public void RefreshAfterCharacterTabChange()
     {
-        SaveSnapshot(silent: true);
-        ExportData(silent: true);
-        if (activeCharacter != null)
-            ScanOnce();
+        Configuration.Save();
     }
 
     /// <summary>
@@ -785,21 +900,43 @@ public sealed class Plugin : IDalamudPlugin
         if (Configuration.ExportAsCsv)
         {
             var csvPath = Path.Combine(folder, "Tataru's Note.csv");
-            CsvExporter.Export(Configuration, csvPath);
-            if (!silent)
-                ChatGui.Print(Loc.Get(
-                    $"[Peanuts] Tataru's Note (CSV) aktualisiert: {csvPath}",
-                    $"[Peanuts] Tataru's Note (CSV) updated: {csvPath}"));
+            try
+            {
+                CsvExporter.Export(Configuration, csvPath);
+                if (!silent)
+                    ChatGui.Print(Loc.Get(
+                        $"[Peanuts] Tataru's Note (CSV) aktualisiert: {csvPath}",
+                        $"[Peanuts] Tataru's Note (CSV) updated: {csvPath}"));
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "[Peanuts] CSV-Export fehlgeschlagen.");
+                if (!silent)
+                    ChatGui.PrintError(Loc.Get(
+                        "[Peanuts] CSV-Export fehlgeschlagen - ist \"Tataru's Note.csv\" evtl. in Excel geöffnet? Bitte schließen und erneut exportieren.",
+                        "[Peanuts] CSV export failed - is \"Tataru's Note.csv\" perhaps open in Excel? Please close it and export again."));
+            }
         }
 
         if (Configuration.ExportAsExcel)
         {
             var xlsxPath = Path.Combine(folder, "Tataru's Note.xlsx");
-            ExcelExporter.Export(Configuration, xlsxPath);
-            if (!silent)
-                ChatGui.Print(Loc.Get(
-                    $"[Peanuts] Tataru's Note (Excel) aktualisiert: {xlsxPath}",
-                    $"[Peanuts] Tataru's Note (Excel) updated: {xlsxPath}"));
+            try
+            {
+                ExcelExporter.Export(Configuration, xlsxPath);
+                if (!silent)
+                    ChatGui.Print(Loc.Get(
+                        $"[Peanuts] Tataru's Note (Excel) aktualisiert: {xlsxPath}",
+                        $"[Peanuts] Tataru's Note (Excel) updated: {xlsxPath}"));
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "[Peanuts] Excel-Export fehlgeschlagen.");
+                if (!silent)
+                    ChatGui.PrintError(Loc.Get(
+                        "[Peanuts] Excel-Export fehlgeschlagen - ist \"Tataru's Note.xlsx\" evtl. in Excel geöffnet? Bitte schließen und erneut exportieren.",
+                        "[Peanuts] Excel export failed - is \"Tataru's Note.xlsx\" perhaps open in Excel? Please close it and export again."));
+            }
         }
 
         // Referenzstand für die "Seit letztem Speichern/Export"-Delta-Anzeige im Tool-Tab sichern.
@@ -813,6 +950,7 @@ public sealed class Plugin : IDalamudPlugin
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
         PluginInterface.UiBuilder.Draw -= DrawUi;
+        PluginInterface.UiBuilder.OpenMainUi -= OnOpenMainUi;
         windowSystem.RemoveAllWindows();
 
         CommandManager.RemoveHandler("/peanuts");

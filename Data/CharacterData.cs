@@ -29,6 +29,11 @@ public class CharacterData
     // Belegte Plätze in der Chocobo-Satteltasche, live erfasst beim Scan. -1 = unbekannt.
     public int UsedSaddlebagSlots { get; set; } = -1;
 
+    // Beim letzten Scan beobachtete Gesamtkapazität der Satteltasche (35 oder
+    // 70, je nach freigeschalteter zweiter Seite). -1 = noch nie erfasst; dann
+    // wird für die Anzeige auf den Standard (MaxSaddlebagSlots) zurückgegriffen.
+    public int SaddlebagCapacity { get; set; } = -1;
+
     // Zeitpunkt der letzten tatsächlichen Erfassung (jeder Scan-Tick, nicht
     // nur bei Vollständigkeit) - für die "Zuletzt gescannt"-Spalte im
     // Edit-Tab -> Charakter.
@@ -56,13 +61,37 @@ public class CharacterData
 
     public bool HasKnownSaddlebagSlots => UsedSaddlebagSlots >= 0;
 
+    /// <summary>Tatsächliche Satteltaschen-Kapazität, falls beobachtet, sonst der Standardwert.</summary>
+    public int EffectiveMaxSaddlebagSlots => SaddlebagCapacity > 0 ? SaddlebagCapacity : MaxSaddlebagSlots;
+
     /// <summary>Freie Satteltaschenplätze. -1, solange unbekannt.</summary>
-    public int FreeSaddlebagSlots => HasKnownSaddlebagSlots ? MaxSaddlebagSlots - UsedSaddlebagSlots : -1;
+    public int FreeSaddlebagSlots => HasKnownSaddlebagSlots ? EffectiveMaxSaddlebagSlots - UsedSaddlebagSlots : -1;
 
     /// <summary>Kombinierte Stückzahl (Hauptinventar + Satteltasche) für eine Item-Variante.</summary>
     public int GetTotalCount(string variantKey) =>
         (ItemCounts.TryGetValue(variantKey, out var a) ? a : 0) +
         (SaddlebagCounts.TryGetValue(variantKey, out var b) ? b : 0);
+
+    /// <summary>True, wenn diese Variante im HAUPTINVENTAR (Bag 1-4) mit Stückzahl &gt; 0 liegt.</summary>
+    public bool IsInInventory(string variantKey) => ItemCounts.TryGetValue(variantKey, out var v) && v > 0;
+
+    /// <summary>True, wenn diese Variante in der Chocobo-SATTELTASCHE mit Stückzahl &gt; 0 liegt.</summary>
+    public bool IsInSaddlebag(string variantKey) => SaddlebagCounts.TryGetValue(variantKey, out var v) && v > 0;
+
+    /// <summary>
+    /// Doppelfund auf ITEM-Ebene: irgendeine Variante (NQ/HQ) des Items liegt
+    /// im Hauptinventar UND (dieselbe ODER eine andere Variante) in der
+    /// Satteltasche. Erkennt damit auch den Fall NQ-im-Inventar + HQ-in-der-
+    /// Satteltasche, den die frühere rein variantengenaue Prüfung übersehen hat.
+    /// Arbeitet direkt auf den gespeicherten Zählungen, funktioniert daher auch
+    /// für nicht gerade eingeloggte Charaktere (letzter Scan-Stand).
+    /// </summary>
+    public bool IsDuplicateItem(ItemDefinition item) =>
+        item.Variants().Any(v => IsInInventory(v.CountKey)) &&
+        item.Variants().Any(v => IsInSaddlebag(v.CountKey));
+
+    /// <summary>True, wenn mindestens eines der getrackten Items ein Doppelfund ist.</summary>
+    public bool HasAnyDuplicate() => TrackedItems.All.Any(IsDuplicateItem);
 
     /// <summary>Alle Zählungen (Hauptinventar + Satteltasche) zu einem Dictionary zusammengeführt - z.B. für History-Snapshots.</summary>
     public Dictionary<string, int> GetCombinedCounts()

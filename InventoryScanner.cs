@@ -11,7 +11,15 @@ public class ScanResult
     public Dictionary<string, int> Inventory { get; } = new();
     public Dictionary<string, int> Saddlebag { get; } = new();
     public int UsedInventorySlots { get; set; }
-    public int UsedSaddlebagSlots { get; set; }
+    public int UsedSaddlebagSlots { get; set; } = -1;
+
+    // True, wenn die Satteltasche beim Scan tatsächlich geladen war (vor dem
+    // ersten Öffnen am Rufglöckchen ist sie es oft nicht). Nur dann sind
+    // Satteltaschen-Zählung/-Slots/-Kapazität aussagekräftig.
+    public bool SaddlebagLoaded { get; set; }
+
+    // Beobachtete Gesamtkapazität der Satteltasche (35 oder 70), -1 = unbekannt.
+    public int SaddlebagCapacity { get; set; } = -1;
 }
 
 /// <summary>
@@ -76,16 +84,48 @@ public unsafe class InventoryScanner
             return result;
         }
 
-        ScanContainers(inventoryManager, BagsToScan, result.Inventory);
-        ScanContainers(inventoryManager, SaddlebagsToScan, result.Saddlebag);
+        // Einmalig eine Nachschlagetabelle Basis-ItemId -> Item aufbauen, statt
+        // pro Inventar-Slot linear über alle Tracked-Items zu iterieren.
+        // Doppelte ItemIds werden im Item-Tab bereits verhindert; sollte doch
+        // eine doppelt vorkommen, gewinnt der letzte Eintrag (Indexer).
+        var lookup = new Dictionary<uint, ItemDefinition>();
+        foreach (var item in TrackedItems.All)
+        {
+            if (item.Enabled && item.ItemId != 0)
+                lookup[item.ItemId] = item;
+        }
+
+        ScanContainers(inventoryManager, BagsToScan, result.Inventory, lookup);
+        ScanContainers(inventoryManager, SaddlebagsToScan, result.Saddlebag, lookup);
 
         result.UsedInventorySlots = CountUsedSlots(inventoryManager, BagsToScan);
-        result.UsedSaddlebagSlots = CountUsedSlots(inventoryManager, SaddlebagsToScan);
+
+        // Satteltasche: Kapazität und Ladezustand bestimmen. Vor dem ersten
+        // Öffnen der Satteltasche sind ihre Container oft null - dann gilt sie
+        // als "nicht geladen" und die belegten Plätze bleiben unbekannt (-1),
+        // statt fälschlich 0 (= scheinbar leer) zu melden.
+        var saddlebagCapacity = 0;
+        var saddlebagLoaded = false;
+        foreach (var bag in SaddlebagsToScan)
+        {
+            var container = inventoryManager->GetInventoryContainer(bag);
+            if (container != null && container->Size > 0)
+            {
+                saddlebagCapacity += container->Size;
+                saddlebagLoaded = true;
+            }
+        }
+
+        result.SaddlebagLoaded = saddlebagLoaded;
+        result.SaddlebagCapacity = saddlebagLoaded ? saddlebagCapacity : -1;
+        result.UsedSaddlebagSlots = saddlebagLoaded
+            ? CountUsedSlots(inventoryManager, SaddlebagsToScan)
+            : -1;
 
         return result;
     }
 
-    private static void ScanContainers(InventoryManager* inventoryManager, InventoryType[] bags, Dictionary<string, int> counts)
+    private static void ScanContainers(InventoryManager* inventoryManager, InventoryType[] bags, Dictionary<string, int> counts, Dictionary<uint, ItemDefinition> lookup)
     {
         foreach (var bag in bags)
         {
@@ -99,33 +139,20 @@ public unsafe class InventoryScanner
                 if (slot == null || slot->ItemId == 0)
                     continue;
 
-                var rawId = slot->ItemId;
-                uint baseId;
-                var isHq = false;
+                // HQ-Erkennung: Im echten Inventar steht in slot->ItemId die
+                // BASIS-ID; die Qualität steckt im Flags-Feld (HighQuality-Bit).
+                // (Der +1.000.000-Offset gilt fürs Marktbrett/andere Kontexte,
+                // NICHT für Inventar-Slots - deshalb wurde HQ früher nie erkannt
+                // und alles als NQ gezählt.)
+                var baseId = slot->ItemId;
+                var isHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
 
-                if (rawId >= 1_000_000)
-                {
-                    baseId = rawId - 1_000_000;
-                    isHq = true;
-                }
-                else if (rawId >= 500_000)
-                {
-                    baseId = rawId - 500_000; // Sammlerstück
-                }
-                else
-                {
-                    baseId = rawId;
-                }
+                if (!lookup.TryGetValue(baseId, out var item))
+                    continue;
 
-                foreach (var item in TrackedItems.All)
-                {
-                    if (!item.Enabled || item.ItemId != baseId)
-                        continue;
-
-                    var key = isHq && item.CanBeHq ? item.HqKey : item.Key;
-                    counts.TryGetValue(key, out var current);
-                    counts[key] = current + slot->Quantity;
-                }
+                var key = isHq && item.CanBeHq ? item.HqKey : item.Key;
+                counts.TryGetValue(key, out var current);
+                counts[key] = current + slot->Quantity;
             }
         }
     }

@@ -51,6 +51,7 @@ public class MainWindow : Window
     private DateTime? selectedRestoreTimestamp;
     private string searchFilter = string.Empty;
     private int distributionGroupMode; // 0 = nach Welt, 1 = nach Datenzentrum
+    private int distributionChartIndex; // 0=Gesamtstand 1=Zuwachs 2=Verlauf 3=Zuwachs/Save 4=Item-Anteil 5+=Snapshots
     private int historyPeriodIndex = 3; // 0=1 Woche, 1=3 Monate, 2=6 Monate, 3=1 Jahr (Default: größter Zeitraum)
     private string characterTabSearch = string.Empty;
 
@@ -272,8 +273,25 @@ public class MainWindow : Window
 
         var min = values.Min();
         var max = values.Max();
+
+        // Bei konstantem Verlauf (alle Werte gleich) würde min*0.95..max*1.05
+        // entarten (bei 0 sogar zu 0..0). Dann eine kleine künstliche Spanne
+        // um den Wert legen, damit die Linie sauber mittig gezeichnet wird.
+        float scaleMin, scaleMax;
+        if (max - min < 0.0001f)
+        {
+            var pad = Math.Abs(max) < 0.0001f ? 1f : Math.Abs(max) * 0.05f;
+            scaleMin = min - pad;
+            scaleMax = max + pad;
+        }
+        else
+        {
+            scaleMin = min * 0.95f;
+            scaleMax = max * 1.05f;
+        }
+
         ImGui.SameLine();
-        ImGui.PlotLines("##trend", values, values.Length, "", min * 0.95f, max * 1.05f,
+        ImGui.PlotLines("##trend", values, values.Length, "", scaleMin, scaleMax,
             new Vector2(width, height), sizeof(float));
         Tooltip(
             "Gil-Trend der letzten gespeicherten Tage (aus dem Verlauf) - kein exakter Wert, nur zur groben Orientierung.",
@@ -501,11 +519,11 @@ public class MainWindow : Window
                 : "Never scanned live yet - unknown how many inventory slots are free. Log in and scan once to capture this.");
 
         ImGui.TableNextColumn();
-        var hasDuplicate = character.DuplicateFindKeys.Count > 0;
+        var hasDuplicate = character.HasAnyDuplicate();
         if (character.HasKnownSaddlebagSlots)
         {
             var bagColor = hasDuplicate ? PinkText : GetSlotColor(character.FreeSaddlebagSlots, 10, 70);
-            ChartHelpers.DrawSlotBar(character.FreeSaddlebagSlots, CharacterData.MaxSaddlebagSlots, bagColor);
+            ChartHelpers.DrawSlotBar(character.FreeSaddlebagSlots, character.EffectiveMaxSaddlebagSlots, bagColor);
         }
         else
         {
@@ -513,11 +531,11 @@ public class MainWindow : Window
         }
         Tooltip(
             character.HasKnownSaddlebagSlots
-                ? "Freie Plätze in der Chocobo-Satteltasche (von 70). Grün = leer, Rot = voll. Pink = Doppelfund erkannt (Item sowohl im Inventar als auch in der Satteltasche)."
-                : "Noch nie live gescannt - unbekannt, wie viele Satteltaschenplätze frei sind.",
+                ? "Freie Plätze in der Chocobo-Satteltasche. Grün = leer, Rot = voll. Pink = Doppelfund erkannt (Item sowohl im Inventar als auch in der Satteltasche)."
+                : "Satteltasche noch nicht erfasst - bitte einmal am Rufglöckchen öffnen, damit Peanuts sie auslesen kann.",
             character.HasKnownSaddlebagSlots
-                ? "Free slots in the chocobo saddlebag (out of 70). Green = empty, red = full. Pink = duplicate find detected (item found both in inventory and saddlebag)."
-                : "Never scanned live yet - unknown how many saddlebag slots are free.");
+                ? "Free slots in the chocobo saddlebag. Green = empty, red = full. Pink = duplicate find detected (item found both in inventory and saddlebag)."
+                : "Saddlebag not captured yet - please open it once at a summoning bell so Peanuts can read it.");
 
         if (!charExpanded)
             return;
@@ -552,15 +570,20 @@ public class MainWindow : Window
                 Item: item,
                 Nq: character.GetTotalCount(item.Key),
                 Hq: item.CanBeHq ? character.GetTotalCount(item.HqKey) : (int?)null,
-                NqDup: character.DuplicateFindKeys.Contains(item.Key),
-                HqDup: item.CanBeHq && character.DuplicateFindKeys.Contains(item.HqKey)))
+                // Zellgenaue Doppelfund-Erkennung: die konkrete Qualität liegt
+                // sowohl im Hauptinventar als auch in der Satteltasche.
+                NqDup: character.IsInInventory(item.Key) && character.IsInSaddlebag(item.Key),
+                HqDup: item.CanBeHq && character.IsInInventory(item.HqKey) && character.IsInSaddlebag(item.HqKey),
+                // Item-Doppelfund (auch qualitätsübergreifend) -> Name einfärben.
+                ItemDup: character.IsDuplicateItem(item)))
             .ToList();
 
-        if (!ImGui.BeginTable($"items_{world.Name}_{character.Name}", 4,
+        if (!ImGui.BeginTable($"items_{world.Name}_{character.Name}", 5,
                 ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
             return;
 
         ImGui.TableSetupColumn(Loc.Get("Item", "Item"), ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn(Loc.Get("Gesamt", "Total"), ImGuiTableColumnFlags.WidthFixed, 70);
         ImGui.TableSetupColumn("NQ", ImGuiTableColumnFlags.WidthFixed, 70);
         ImGui.TableSetupColumn("HQ", ImGuiTableColumnFlags.WidthFixed, 70);
         ImGui.TableSetupColumn("Stacks", ImGuiTableColumnFlags.WidthFixed, 70);
@@ -570,29 +593,35 @@ public class MainWindow : Window
         {
             var stacks = StackMath.CeilDiv(row.Nq, (int)row.Item.MaxStackSize)
                          + (row.Hq.HasValue ? StackMath.CeilDiv(row.Hq.Value, (int)row.Item.MaxStackSize) : 0);
-            var isDup = row.NqDup || row.HqDup;
+            var total = row.Nq + (row.Hq ?? 0);
 
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            ImGui.TextColored(isDup ? PinkText : Vector4.One, row.Item.Name);
-            if (isDup)
+            ImGui.TextColored(row.ItemDup ? PinkText : Vector4.One, row.Item.Name);
+            if (row.ItemDup)
                 Tooltip(
                     "Doppelfund: dieses Item wurde sowohl im Hauptinventar als auch in der Satteltasche gefunden - beide Mengen wurden zusammengezählt.",
                     "Duplicate find: this item was found both in the main inventory and in the saddlebag - both amounts were added together.");
 
             ImGui.TableNextColumn();
+            ImGui.TextColored(GoldText, total.ToString());
+            Tooltip(
+                "Gesamtstückzahl beider Qualitäten (NQ + HQ) zusammen, Hauptinventar + Satteltasche kombiniert.",
+                "Total quantity of both qualities (NQ + HQ) combined, main inventory + saddlebag combined.");
+
+            ImGui.TableNextColumn();
             ImGui.TextColored(row.NqDup ? PinkText : Vector4.One, row.Nq.ToString());
             Tooltip(
-                "Besessene NQ-Stückzahl (Hauptinventar + Satteltasche kombiniert).",
-                "Owned NQ quantity (main inventory + saddlebag combined).");
+                "Stückzahl der Items niederer Qualität (NQ), Hauptinventar + Satteltasche kombiniert.",
+                "Quantity of normal-quality items (NQ), main inventory + saddlebag combined.");
 
             ImGui.TableNextColumn();
             if (row.Hq.HasValue)
             {
                 ImGui.TextColored(row.HqDup ? PinkText : Vector4.One, row.Hq.Value.ToString());
                 Tooltip(
-                    "Besessene HQ-Stückzahl (Hauptinventar + Satteltasche kombiniert).",
-                    "Owned HQ quantity (main inventory + saddlebag combined).");
+                    "Stückzahl der Items höherer Qualität (HQ), Hauptinventar + Satteltasche kombiniert.",
+                    "Quantity of high-quality items (HQ), main inventory + saddlebag combined.");
             }
             else
             {
@@ -697,47 +726,243 @@ public class MainWindow : Window
         return total;
     }
 
+    /// <summary>
+    /// Segmente eines datierten, vergangenen Snapshots (Diagramm 3-6): Gil-
+    /// Anteil pro Welt bzw. Datenzentrum zum Zeitpunkt dieses Verlaufs-Batches,
+    /// direkt aus den gespeicherten History-Einträgen dieses Zeitstempels.
+    /// </summary>
+    private List<ChartHelpers.Segment> BuildBatchSegments(DateTime batchTimestamp, int groupMode)
+    {
+        var entries = plugin.Configuration.History
+            .Where(h => h.Timestamp == batchTimestamp)
+            .ToList();
+
+        var grouped = groupMode == 0
+            ? entries.GroupBy(h => h.World).Select(g => (Label: g.Key, Value: g.Sum(h => h.TotalGil)))
+            : entries.GroupBy(h => DataCenters.GetDataCenter(h.World)).Select(g => (Label: g.Key, Value: g.Sum(h => h.TotalGil)));
+
+        return grouped
+            .Where(x => x.Value > 0)
+            .OrderByDescending(x => x.Value)
+            .Select((x, i) => new ChartHelpers.Segment(x.Label, x.Value, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Liefert den Gesamt-Gilstand (Summe über alle Charaktere) je gespeichertem
+    /// Snapshot, zeitlich aufsteigend sortiert - Grundlage für den Umsatz-Verlauf
+    /// und den "Zuwachs je Speicherung"-Balken.
+    /// </summary>
+    private List<(DateTime Time, long Gil)> BuildGilTimeline()
+    {
+        return plugin.Configuration.History
+            .GroupBy(h => h.Timestamp)
+            .Select(g => (Time: g.Key, Gil: g.Sum(h => h.TotalGil)))
+            .OrderBy(x => x.Time)
+            .ToList();
+    }
+
     private void DrawGilDistributionSection()
     {
         if (!ImGui.CollapsingHeader(Loc.Get("📊 Gil-Verteilung", "📊 Gil Distribution")))
             return;
+
+        var cfg = plugin.Configuration;
 
         ImGui.RadioButton(Loc.Get("Nach Welt", "By World"), ref distributionGroupMode, 0);
         ImGui.SameLine();
         ImGui.RadioButton(Loc.Get("Nach Datenzentrum", "By Data Center"), ref distributionGroupMode, 1);
         ImGui.Spacing();
 
-        var cfg = plugin.Configuration;
-        var totalSegments = BuildDistributionSegments(w => w.TotalGil(), distributionGroupMode);
+        // Bis zu 4 datierte, vergangene Snapshots (neueste zuerst).
+        var pastBatches = plugin.GetHistoryBatches().Take(4).ToList();
 
-        List<ChartHelpers.Segment>? growthSegments = null;
-        if (cfg.LastCheckpointTimestamp.HasValue)
+        // Feste Diagramme: 0 = Gesamtstand, 1 = Zuwachs seit Speichern,
+        // 2 = Umsatz-Verlauf (Linie), 3 = Zuwachs je Speicherung (Balken),
+        // 4 = Item-Anteil (Donut). Ab Index 5 folgen die datierten Snapshots.
+        const int fixedChartCount = 5;
+        var chartCount = fixedChartCount + pastBatches.Count;
+
+        // War ein höherer Diagramm-Index gewählt und ist nach dem Löschen von
+        // Verlaufsdaten nicht mehr vorhanden, auf das erste Diagramm zurückfallen -
+        // VOR dem Zeichnen der Auswahl, damit das richtige Kästchen markiert ist.
+        if (distributionChartIndex < 0 || distributionChartIndex >= chartCount)
+            distributionChartIndex = 0;
+
+        // Diagramm-Auswahl als Kästchen (wie der Zeitraum-Umschalter im
+        // History-Tab): man klickt sich durch die Darstellungen durch.
+        // Zeile 1 - die immer aktuellen Verteilungs-Donuts.
+        ImGui.RadioButton(Loc.Get("Diagramm 1: Gesamtstand", "Chart 1: Total"), ref distributionChartIndex, 0);
+        ImGui.SameLine();
+        ImGui.RadioButton(Loc.Get("Diagramm 2: Zuwachs seit letztem Speichern/Export", "Chart 2: Growth since last save/export"), ref distributionChartIndex, 1);
+
+        // Zeile 2 - die drei zusätzlichen Auswertungen (andere Blickwinkel).
+        ImGui.RadioButton(Loc.Get("Umsatz-Verlauf (Linie)", "Revenue trend (line)"), ref distributionChartIndex, 2);
+        ImGui.SameLine();
+        ImGui.RadioButton(Loc.Get("Zuwachs je Speicherung", "Growth per save"), ref distributionChartIndex, 3);
+        ImGui.SameLine();
+        ImGui.RadioButton(Loc.Get("Item-Anteil", "Item share"), ref distributionChartIndex, 4);
+
+        // Zeile 3 - die datierten, vergangenen Snapshots.
+        for (var i = 0; i < pastBatches.Count; i++)
         {
-            var checkpoint = cfg.LastCheckpointTimestamp.Value;
-            growthSegments = BuildDistributionSegments(
-                w => Math.Max(0, w.TotalGil() - GetWorldGilAtCheckpoint(w, checkpoint)), distributionGroupMode);
+            if (i > 0)
+                ImGui.SameLine();
+            var label = Loc.Get(
+                $"Snapshot {pastBatches[i].Timestamp:dd.MM.yyyy HH:mm}",
+                $"Snapshot {pastBatches[i].Timestamp:MM/dd/yyyy HH:mm}");
+            ImGui.RadioButton($"{label}##distchart{i + fixedChartCount}", ref distributionChartIndex, i + fixedChartCount);
         }
 
-        var startPos = ImGui.GetCursorPos();
-        const float columnWidth = 300f;
+        ImGui.Spacing();
 
-        ImGui.TextUnformatted(Loc.Get("Gesamtstand", "Total"));
-        ChartHelpers.DrawDonutChart(totalSegments, 80f, $"{cfg.GlobalTotalGil():N0}\nGil");
-        var endY1 = ImGui.GetCursorPosY();
+        // --- Diagramm 1: aktueller Gesamtstand ---
+        if (distributionChartIndex == 0)
+        {
+            var totalSegments = BuildDistributionSegments(w => w.TotalGil(), distributionGroupMode);
+            if (totalSegments.Count == 0)
+            {
+                ImGui.TextDisabled(Loc.Get("Keine Daten für das Diagramm.", "No data for the chart."));
+                return;
+            }
 
-        ImGui.SetCursorPos(new Vector2(startPos.X + columnWidth, startPos.Y));
-        ImGui.TextUnformatted(Loc.Get("Zuwachs seit letztem Speichern/Export", "Growth since last save/export"));
-        if (growthSegments == null)
-            ImGui.TextDisabled(Loc.Get("Noch nicht gespeichert/exportiert.", "Not saved/exported yet."));
-        else if (growthSegments.Count == 0)
+            ChartHelpers.DrawDonutChart(totalSegments, 90f, $"{cfg.GlobalTotalGil():N0}\nGil");
+            return;
+        }
+
+        // --- Diagramm 2: Zuwachs seit letztem Speichern/Export ---
+        if (distributionChartIndex == 1)
+        {
+            if (!cfg.LastCheckpointTimestamp.HasValue)
+            {
+                ImGui.TextDisabled(Loc.Get("Noch nicht gespeichert/exportiert.", "Not saved/exported yet."));
+                return;
+            }
+
+            var checkpoint = cfg.LastCheckpointTimestamp.Value;
+            var growthSegments = BuildDistributionSegments(
+                w => Math.Max(0, w.TotalGil() - GetWorldGilAtCheckpoint(w, checkpoint)), distributionGroupMode);
+
+            if (growthSegments.Count == 0)
+            {
+                ImGui.TextDisabled(Loc.Get(
+                    "Noch kein Zuwachs seit dem letzten Speichern/Export.",
+                    "No growth since the last save/export yet."));
+                return;
+            }
+
             ImGui.TextDisabled(Loc.Get(
-                "Noch kein Zuwachs seit dem letzten Speichern/Export.",
-                "No growth since the last save/export yet."));
-        else
-            ChartHelpers.DrawDonutChart(growthSegments, 80f, $"+{growthSegments.Sum(s => s.Value):N0}\nGil");
-        var endY2 = ImGui.GetCursorPosY();
+                $"Vergleich gegen den Stand vom {checkpoint:dd.MM.yyyy HH:mm}.",
+                $"Compared against the state from {checkpoint:MM/dd/yyyy HH:mm}."));
+            ChartHelpers.DrawDonutChart(growthSegments, 90f, $"+{growthSegments.Sum(s => s.Value):N0}\nGil");
+            return;
+        }
 
-        ImGui.SetCursorPos(new Vector2(startPos.X, MathF.Max(endY1, endY2)));
+        // --- Umsatz-Verlauf: Gesamt-Gil über alle Snapshots hinweg (Linie) ---
+        if (distributionChartIndex == 2)
+        {
+            var timeline = BuildGilTimeline();
+            if (timeline.Count < 2)
+            {
+                ImGui.TextDisabled(Loc.Get(
+                    "Zu wenig Daten - mindestens 2 gespeicherte Snapshots nötig (\"Save\"-Button).",
+                    "Not enough data - at least 2 saved snapshots required (\"Save\" button)."));
+                return;
+            }
+
+            var values = timeline.Select(x => (float)x.Gil).ToArray();
+            var min = values.Min();
+            var max = values.Max();
+            float sMin = min * 0.98f, sMax = max * 1.02f;
+            if (sMax - sMin < 0.0001f) { sMin = min - 1f; sMax = max + 1f; }
+
+            ImGui.TextDisabled(Loc.Get(
+                $"{timeline[0].Time:dd.MM.yyyy} - {timeline[^1].Time:dd.MM.yyyy} · aktuell {timeline[^1].Gil:N0} Gil",
+                $"{timeline[0].Time:MM/dd/yyyy} - {timeline[^1].Time:MM/dd/yyyy} · currently {timeline[^1].Gil:N0} Gil"));
+            ImGui.PlotLines("##umsatzverlauf", values, values.Length, "", sMin, sMax,
+                new Vector2(ImGui.GetContentRegionAvail().X, 120f), sizeof(float));
+            return;
+        }
+
+        // --- Zuwachs je Speicherung: Differenz zwischen aufeinanderfolgenden Snapshots (Balken) ---
+        if (distributionChartIndex == 3)
+        {
+            var timeline = BuildGilTimeline();
+            if (timeline.Count < 2)
+            {
+                ImGui.TextDisabled(Loc.Get(
+                    "Zu wenig Daten - mindestens 2 gespeicherte Snapshots nötig (\"Save\"-Button).",
+                    "Not enough data - at least 2 saved snapshots required (\"Save\" button)."));
+                return;
+            }
+
+            var deltas = new float[timeline.Count - 1];
+            for (var i = 1; i < timeline.Count; i++)
+                deltas[i - 1] = (float)(timeline[i].Gil - timeline[i - 1].Gil);
+
+            var sMin = Math.Min(0f, deltas.Min());
+            var sMax = Math.Max(0f, deltas.Max());
+            if (sMax - sMin < 0.0001f) sMax = sMin + 1f;
+
+            ImGui.TextDisabled(Loc.Get(
+                "Gil-Differenz zwischen je zwei aufeinanderfolgenden Speicherungen.",
+                "Gil difference between two consecutive saves."));
+            ImGui.PlotHistogram("##zuwachsjespeicherung", deltas, deltas.Length, "", sMin, sMax,
+                new Vector2(ImGui.GetContentRegionAvail().X, 120f), sizeof(float));
+            return;
+        }
+
+        // --- Item-Anteil: Gil-Anteil der getrackten Items am Gesamtstand (global, Donut) ---
+        if (distributionChartIndex == 4)
+        {
+            var itemSegments = TrackedItems.All
+                .Select(item =>
+                {
+                    long gil = 0;
+                    foreach (var (key, price) in item.Variants())
+                    {
+                        var qty = plugin.Configuration.Worlds.Values
+                            .Sum(w => w.VisibleCharacters.Sum(c => c.GetTotalCount(key)));
+                        gil += (long)qty * price;
+                    }
+                    return (item.Name, Gil: gil);
+                })
+                .Where(x => x.Gil > 0)
+                .OrderByDescending(x => x.Gil)
+                .Select((x, i) => new ChartHelpers.Segment(x.Name, x.Gil, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
+                .ToList();
+
+            if (itemSegments.Count == 0)
+            {
+                ImGui.TextDisabled(Loc.Get("Keine Daten für das Diagramm.", "No data for the chart."));
+                return;
+            }
+
+            ImGui.TextDisabled(Loc.Get(
+                "Gil-Anteil je Item über alle sichtbaren Charaktere.",
+                "Gil share per item across all visible characters."));
+            ChartHelpers.DrawDonutChart(itemSegments, 90f, $"{itemSegments.Sum(s => s.Value):N0}\nGil");
+            return;
+        }
+
+        // --- Datierter, vergangener Snapshot ---
+        var batchIndex = distributionChartIndex - fixedChartCount;
+        if (batchIndex < 0 || batchIndex >= pastBatches.Count)
+            return;
+
+        var batch = pastBatches[batchIndex];
+        var batchSegments = BuildBatchSegments(batch.Timestamp, distributionGroupMode);
+
+        if (batchSegments.Count == 0)
+        {
+            ImGui.TextDisabled(Loc.Get("Keine Daten für diesen Snapshot.", "No data for this snapshot."));
+            return;
+        }
+
+        ImGui.TextDisabled(Loc.Get(
+            $"Stand vom {batch.Timestamp:dd.MM.yyyy HH:mm} ({batch.CharacterCount} Charakter(e)).",
+            $"State from {batch.Timestamp:MM/dd/yyyy HH:mm} ({batch.CharacterCount} character(s))."));
+        ChartHelpers.DrawDonutChart(batchSegments, 90f, $"{batchSegments.Sum(s => s.Value):N0}\nGil");
     }
 
     /// <summary>Gestapeltes Balkendiagramm je Welt: Aufteilung des Welt-Gilwerts auf die 8 Items.</summary>
@@ -879,6 +1104,21 @@ public class MainWindow : Window
         ImGui.Separator();
         ImGui.Spacing();
 
+        ImGui.TextUnformatted(Loc.Get("Verhalten", "Behavior"));
+        var autoStart = cfg.AutoStartOnLogin;
+        if (ImGui.Checkbox(Loc.Get("Nach Login automatisch starten", "Start automatically after login"), ref autoStart))
+        {
+            cfg.AutoStartOnLogin = autoStart;
+            cfg.Save();
+        }
+        ImGui.TextDisabled(Loc.Get(
+            "Aus: Das Tool bleibt nach dem Login gestoppt, bis du auf \"Start\" klickst.",
+            "Off: the tool stays stopped after login until you click \"Start\"."));
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
         if (!exportFolderBufferInitialized)
         {
             exportFolderBuffer = cfg.ExportFolder;
@@ -971,7 +1211,7 @@ public class MainWindow : Window
             "disappear entirely, not just their values). History is kept."));
         ImGui.Spacing();
 
-        if (ImGui.Button(Loc.Get("Broken", "Broken"), new Vector2(120, 30)))
+        if (ImGui.Button(Loc.Get("Werkseinstellung", "Factory reset"), new Vector2(160, 30)))
             ImGui.OpenPopup("ConfirmBroken");
 
         if (ImGui.BeginPopup("ConfirmBroken"))
@@ -998,12 +1238,6 @@ public class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Kleiner An/Aus-Schalter mit derselben Grün(an)/Rot(aus)-Farbmechanik,
-    /// die überall im Overlay für Ampel-artige Zustände genutzt wird.
-    /// Gibt true zurück, wenn der Nutzer geklickt hat (Wert muss dann vom
-    /// Aufrufer umgeschaltet werden).
-    /// </summary>
     /// <summary>Zeigt einen Erklärungs-Tooltip, wenn das zuletzt gezeichnete Element gehovert wird.</summary>
     private static void Tooltip(string de, string en)
     {
@@ -1011,6 +1245,12 @@ public class MainWindow : Window
             ImGui.SetTooltip(Loc.Get(de, en));
     }
 
+    /// <summary>
+    /// Kleiner An/Aus-Schalter mit derselben Grün(an)/Rot(aus)-Farbmechanik,
+    /// die überall im Overlay für Ampel-artige Zustände genutzt wird.
+    /// Gibt true zurück, wenn der Nutzer geklickt hat (Wert muss dann vom
+    /// Aufrufer umgeschaltet werden).
+    /// </summary>
     private bool DrawToggleSwitch(string id, bool isOn)
     {
         var label = isOn ? Loc.Get("An", "On") : Loc.Get("Aus", "Off");
@@ -1023,11 +1263,13 @@ public class MainWindow : Window
     /// <summary>
     /// Verwaltung einzelner Charaktere: Sichtbarkeit im Tool-Tab, im
     /// Umsatzverlauf, im Datencenter-Ranking und beim Export separat
-    /// schaltbar, plus Löschen (nur mit gehaltener STRG-Taste). Jede
-    /// Änderung löst automatisch Save+Export+Scan aus, damit sie sofort
-    /// überall sichtbar wird. Die zugrunde liegenden Daten (Stückzahlen,
-    /// Verlauf) bleiben von den Sichtbarkeits-Schaltern unberührt - nur
-    /// "Löschen" entfernt den Charakter tatsächlich.
+    /// schaltbar, plus Löschen (nur mit gehaltener STRG-Taste). Die
+    /// Sichtbarkeits-Schalter sind reine Anzeige-Einstellungen und werden
+    /// lediglich sofort gespeichert - sie erzeugen keinen Snapshot und
+    /// schreiben keine Exportdateien (das übernehmen weiterhin nur die
+    /// "Save"-/"Export"-Buttons). Die zugrunde liegenden Daten (Stückzahlen,
+    /// Verlauf) bleiben von den Schaltern unberührt - nur "Löschen" entfernt
+    /// den Charakter tatsächlich (reversibel über das Feld der Ehre).
     /// </summary>
     private void DrawCharacterTabSection()
     {

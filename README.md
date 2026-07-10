@@ -27,6 +27,9 @@ archive, and a language system that follows the client or can be set manually.
 
 Peanuts should now be available to you in the plugin installer ♥
 
+By default Peanuts starts automatically after login; this can be turned off
+via the auto-start toggle in the Edit tab.
+
 ## Commands
 
 `/peanuts` -> Opens/closes the Peanuts overlay.
@@ -34,7 +37,7 @@ Peanuts should now be available to you in the plugin installer ♥
 `/peanutsoff` -> Stops the Peanuts tool.
 `/peanutstot` -> Prints the grand total (Gil/stacks/characters) directly to chat.
 `/peanutsex` -> Exports Tataru's Note (CSV/Excel, depending on the Edit tab settings).
-`/peanutsres` -> Resets the whole overlay (all worlds/characters/history).
+`/peanutsres confirm` -> Resets the whole overlay (all worlds/characters/history). Running `/peanutsres` without `confirm` only prints a warning and does nothing, to prevent an accidental reset.
 
 Meowdy ♥
 
@@ -75,8 +78,11 @@ warning appended.
   next to Gil values. Start/Stop, Reset, Save, Export, and "Copy summary".
   Below the tree: a Gil distribution donut chart (by world or data center)
   shown side by side with a second donut showing Gil growth since the last
-  save/export, a stacked bar chart of each world's Gil composition by item,
-  and an item heatmap showing who collected the most of what. Expanding a
+  save/export, plus three more selectable views - a revenue trend line
+  across all saved snapshots, a growth-per-save bar chart, and a global
+  item-share donut - and any number of dated history snapshots. Also a
+  stacked bar chart of each world's Gil composition by item, and an item
+  heatmap showing who collected the most of what. Expanding a
   character shows a resizable table with separate NQ/HQ/Stacks columns per
   item (both qualities combined into a single row).
 - **History tab**: pick a world and character, browse Gil history as a graph
@@ -92,7 +98,7 @@ warning appended.
   that moves a character to the **Field of Honor** at the bottom of the tab,
   where "Pulse of Life!" brings them back at any time, and only "Aetherial
   Sea" (with its own confirmation) actually, permanently removes them. A
-  "Broken" button in the danger zone resets the whole overlay structure
+  "Factory reset" button in the danger zone resets the whole overlay structure
   (history is kept).
 - **Item tab**: search the full FFXIV item catalog and add anything you want
   to track (already-added items appear grayed out in search results to
@@ -113,11 +119,15 @@ manual override dictionary, but there is currently no in-UI editor for it.
 ## Storage
 
 All data lives as JSON in the standard Dalamud plugin configuration
-(`Configuration.cs`), saved automatically after every scan and every
-Save/Export/toggle. History snapshots, per-character visibility flags
-(including the Field of Honor archive), and the tracked item list are all
-part of this same file - hiding, archiving, or disabling something never
+(`Configuration.cs`), saved automatically whenever a scan detects an actual
+change, and after Save/Export. History snapshots, per-character visibility
+flags (including the Field of Honor archive), and the tracked item list are
+all part of this same file - hiding, archiving, or disabling something never
 touches the underlying stored data unless you explicitly use "Aetherial Sea".
+Toggling a character's visibility only persists that setting - it no longer
+triggers a history snapshot or export on its own; those still happen via the
+Save/Export buttons or `/peanutsex`. History entries older than roughly 400
+days are pruned automatically so the config file doesn't grow without bound.
 
 Export ("Tataru's Note") doesn't overwrite itself: CSV (`CsvExporter.cs`,
 semicolon-separated) appends a new, dated block on every export, marking
@@ -170,6 +180,9 @@ manuell eingestellt werden kann.
 
 Peanuts sollte jetzt im Plugin-Installer auftauchen ♥
 
+Standardmäßig startet Peanuts automatisch nach dem Login; das lässt sich über
+den Auto-Start-Schalter im Edit-Tab abschalten.
+
 ## Commands
 
 `/peanuts` -> Öffnet/schließt das Peanuts-Overlay.
@@ -177,7 +190,7 @@ Peanuts sollte jetzt im Plugin-Installer auftauchen ♥
 `/peanutsoff` -> Stoppt das Peanuts-Tool.
 `/peanutstot` -> Druckt die Gesamtsumme (Gil/Stacks/Charaktere) direkt in den Chat.
 `/peanutsex` -> Exportiert Tataru's Note (CSV/Excel, je nach Edit-Einstellung).
-`/peanutsres` -> Setzt das komplette Overlay zurück (alle Welten/Charaktere/Verlauf).
+`/peanutsres confirm` -> Setzt das komplette Overlay zurück (alle Welten/Charaktere/Verlauf). Ohne `confirm` gibt `/peanutsres` nur eine Warnung aus und tut nichts, um ein versehentliches Zurücksetzen zu verhindern.
 
 „Beschreibung": „Kratze die vorhandenen Schmuckstücke/Items zusammen und notiere eifrig deren Anzahl sowie den aktuellen Besitzer in Tatarus kleinem Notizbuch."
 
@@ -220,8 +233,12 @@ Stückzahl-/Bag-Spalte werden pink hervorgehoben, damit es auffällt - und die
   Trend-Sparklines neben den Gil-Werten. Start/Stop, Reset, Save, Export und
   "Zusammenfassung kopieren". Darunter: ein Donut-Diagramm zur
   Gil-Verteilung (nach Welt oder Datenzentrum), daneben ein zweites für den
-  Zuwachs seit dem letzten Speichern/Export, ein gestapeltes Balkendiagramm
-  zur Item-Zusammensetzung je Welt, und eine Item-Heatmap. Beim Aufklappen
+  Zuwachs seit dem letzten Speichern/Export, dazu drei weitere wählbare
+  Ansichten - ein Umsatz-Verlauf als Linie über alle gespeicherten Snapshots,
+  ein Balkendiagramm für den Zuwachs je Speicherung, und ein globaler
+  Item-Anteil-Donut - sowie beliebig viele datierte Verlaufs-Snapshots.
+  Außerdem ein gestapeltes Balkendiagramm zur Item-Zusammensetzung je Welt,
+  und eine Item-Heatmap. Beim Aufklappen
   eines Charakters erscheint eine größenverstellbare Tabelle mit getrennten
   NQ-/HQ-/Stacks-Spalten je Item (beide Qualitäten in einer Zeile kombiniert).
 - **History-Tab**: Welt und Charakter wählen, Gil-Verlauf als Graph und
@@ -237,7 +254,7 @@ Stückzahl-/Bag-Spalte werden pink hervorgehoben, damit es auffällt - und die
   "Löschen" (STRG-Klick), das einen Charakter ins **Feld der Ehre** am Ende
   des Tabs verschiebt, wo "Pulse of Life!" ihn jederzeit zurückholt, und nur
   "Aetherial Sea" (mit eigener Bestätigung) ihn tatsächlich endgültig
-  entfernt. Ein "Broken"-Button in der Gefahrenzone (Werkseinstellung) setzt
+  entfernt. Ein "Werkseinstellung"-Button (Factory reset) in der Gefahrenzone setzt
   die komplette Overlay-Struktur zurück (Verlauf bleibt erhalten).
 - **Item-Tab**: den kompletten FFXIV-Itemkatalog durchsuchen und beliebige
   Items zum Tracking hinzufügen (bereits hinzugefügte Items erscheinen
@@ -259,11 +276,17 @@ Override-Dictionary, dafür gibt es aktuell aber keinen Editor im UI.
 ## Speicherung
 
 Alle Daten liegen als JSON in der normalen Dalamud-Plugin-Konfiguration
-(`Configuration.cs`), automatisch gespeichert nach jedem Scan und jedem
-Save/Export/Schalter. Verlaufs-Snapshots, die Sichtbarkeits-Schalter pro
-Charakter (inklusive des Feld-der-Ehre-Archivs) und die getrackte Item-Liste
-sind alle Teil derselben Datei - Ausblenden, Archivieren oder Deaktivieren
-rührt die gespeicherten Daten nie an, außer du nutzt explizit "Aetherial Sea".
+(`Configuration.cs`), automatisch gespeichert sobald ein Scan eine echte
+Änderung feststellt, sowie nach Save/Export. Verlaufs-Snapshots, die
+Sichtbarkeits-Schalter pro Charakter (inklusive des Feld-der-Ehre-Archivs)
+und die getrackte Item-Liste sind alle Teil derselben Datei - Ausblenden,
+Archivieren oder Deaktivieren rührt die gespeicherten Daten nie an, außer du
+nutzt explizit "Aetherial Sea". Das Umschalten der Sichtbarkeit eines
+Charakters speichert nur noch die Einstellung - es löst keinen automatischen
+Verlaufs-Snapshot oder Export mehr aus; das passiert weiterhin über die
+Save-/Export-Buttons bzw. `/peanutsex`. Verlaufseinträge älter als etwa 400
+Tage werden automatisch entfernt, damit die Konfigurationsdatei nicht
+unbegrenzt wächst.
 
 Der Export ("Tataru's Note") überschreibt sich nicht selbst: CSV
 (`CsvExporter.cs`, Semikolon-getrennt) hängt bei jedem Export einen neuen,
