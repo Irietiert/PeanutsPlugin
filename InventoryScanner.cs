@@ -5,10 +5,20 @@ using PeanutsPlugin.Data;
 
 namespace PeanutsPlugin;
 
+/// <summary>Ergebnis eines einzelnen Scan-Durchlaufs: Hauptinventar und Satteltasche getrennt, damit Doppelfunde erkannt werden können.</summary>
+public class ScanResult
+{
+    public Dictionary<string, int> Inventory { get; } = new();
+    public Dictionary<string, int> Saddlebag { get; } = new();
+    public int UsedInventorySlots { get; set; }
+    public int UsedSaddlebagSlots { get; set; }
+}
+
 /// <summary>
-/// Liest die Anzahl der acht gesuchten Items direkt aus dem Inventar des Clients,
-/// statt auf das Hovern mit der Maus über Tooltips angewiesen zu sein.
-/// Das ist sprachunabhängig (arbeitet über ItemId), schneller und robuster.
+/// Liest die Anzahl der gesuchten Items direkt aus dem Inventar UND der
+/// Chocobo-Satteltasche des Clients, statt auf das Hovern mit der Maus über
+/// Tooltips angewiesen zu sein. Das ist sprachunabhängig (arbeitet über
+/// ItemId), schneller und robuster.
 /// </summary>
 public unsafe class InventoryScanner
 {
@@ -20,6 +30,13 @@ public unsafe class InventoryScanner
         InventoryType.Inventory4,
     };
 
+    // Chocobo-Satteltasche: zwei Seiten à 35 Plätze = 70 Plätze gesamt.
+    private static readonly InventoryType[] SaddlebagsToScan =
+    {
+        InventoryType.SaddleBag1,
+        InventoryType.SaddleBag2,
+    };
+
     private readonly IPluginLog log;
 
     public InventoryScanner(IPluginLog log)
@@ -28,36 +45,49 @@ public unsafe class InventoryScanner
     }
 
     /// <summary>
-    /// Durchsucht das Inventar einmalig und liefert Key -> Stückzahl für alle
-    /// bekannten TrackedItems, deren ItemId bereits aufgelöst wurde.
+    /// Durchsucht Hauptinventar UND Satteltasche einmalig und liefert beide
+    /// getrennt zurück (für die Doppelfund-Erkennung). NQ und HQ werden
+    /// getrennt gezählt: im Spielspeicher hat die HQ-Variante eines Items
+    /// immer die Basis-ItemId + 1.000.000 (feste FFXIV-Konvention),
+    /// Sammlerstücke die Basis-ItemId + 500.000 (werden der NQ-Zählung
+    /// zugeschlagen, da sie nicht an NPCs verkauft werden können).
     /// </summary>
-    /// <summary>
-    /// Durchsucht das Inventar einmalig und liefert Key -> Stückzahl für alle
-    /// bekannten TrackedItems, deren ItemId bereits aufgelöst wurde. NQ und
-    /// HQ werden getrennt gezählt: im Spielspeicher hat die HQ-Variante eines
-    /// Items immer die Basis-ItemId + 1.000.000 (feste FFXIV-Konvention).
-    /// </summary>
-    public Dictionary<string, int> ScanInventory()
+    public ScanResult ScanInventory()
     {
-        var counts = new Dictionary<string, int>();
+        var result = new ScanResult();
         foreach (var item in TrackedItems.All)
         {
             if (!item.Enabled || item.ItemId == 0)
                 continue;
 
-            counts[item.Key] = 0;
+            result.Inventory[item.Key] = 0;
+            result.Saddlebag[item.Key] = 0;
             if (item.CanBeHq)
-                counts[item.HqKey] = 0;
+            {
+                result.Inventory[item.HqKey] = 0;
+                result.Saddlebag[item.HqKey] = 0;
+            }
         }
 
         var inventoryManager = InventoryManager.Instance();
         if (inventoryManager == null)
         {
             log.Warning("[Peanuts] InventoryManager nicht verfügbar - ist der Charakter eingeloggt?");
-            return counts;
+            return result;
         }
 
-        foreach (var bag in BagsToScan)
+        ScanContainers(inventoryManager, BagsToScan, result.Inventory);
+        ScanContainers(inventoryManager, SaddlebagsToScan, result.Saddlebag);
+
+        result.UsedInventorySlots = CountUsedSlots(inventoryManager, BagsToScan);
+        result.UsedSaddlebagSlots = CountUsedSlots(inventoryManager, SaddlebagsToScan);
+
+        return result;
+    }
+
+    private static void ScanContainers(InventoryManager* inventoryManager, InventoryType[] bags, Dictionary<string, int> counts)
+    {
+        foreach (var bag in bags)
         {
             var container = inventoryManager->GetInventoryContainer(bag);
             if (container == null)
@@ -69,17 +99,6 @@ public unsafe class InventoryScanner
                 if (slot == null || slot->ItemId == 0)
                     continue;
 
-                // Im Spielspeicher gibt es DREI ID-Varianten desselben Items:
-                //   Basis-ItemId                (NQ)
-                //   Basis-ItemId + 500.000      (Sammlerstück / Collectable)
-                //   Basis-ItemId + 1.000.000    (HQ)
-                // Sammlerstücke wurden bisher NICHT erkannt - genau das war
-                // die Ursache für "fehlende" Zählungen bei Sammel-Materialien
-                // wie Sicheltanne/Karmizit-Erz/Vivianit/Cloestin. Sie werden
-                // jetzt der NQ-Zählung zugeschlagen (eigene Stapelgröße/
-                // Preislogik existiert für Sammlerstücke nicht sinnvoll, da
-                // sie nicht an NPCs verkauft werden - für die Stückzahl- und
-                // Slot-Erfassung zählen sie aber selbstverständlich mit).
                 var rawId = slot->ItemId;
                 uint baseId;
                 var isHq = false;
@@ -109,24 +128,12 @@ public unsafe class InventoryScanner
                 }
             }
         }
-
-        return counts;
     }
 
-    /// <summary>
-    /// Zählt die belegten Plätze im normalen Inventar (Bag 1-4, insgesamt
-    /// 140 Slots) des aktuell eingeloggten Charakters - unabhängig von den
-    /// 8 getrackten Items, also das exakte Gegenstück zur "129/140"-Anzeige
-    /// im Inventarfenster des Spiels.
-    /// </summary>
-    public int GetUsedInventorySlots()
+    private static int CountUsedSlots(InventoryManager* inventoryManager, InventoryType[] bags)
     {
-        var inventoryManager = InventoryManager.Instance();
-        if (inventoryManager == null)
-            return 0;
-
         var used = 0;
-        foreach (var bag in BagsToScan)
+        foreach (var bag in bags)
         {
             var container = inventoryManager->GetInventoryContainer(bag);
             if (container == null)

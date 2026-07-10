@@ -15,6 +15,7 @@ public class MainWindow : Window
     private static readonly Vector4 GreenText = new(0.3f, 1f, 0.3f, 1f);
     private static readonly Vector4 RedText = new(0.8f, 0.3f, 0.3f, 1f);
     private static readonly Vector4 GraySlot = new(0.6f, 0.6f, 0.6f, 1f);
+    private static readonly Vector4 PinkText = new(1f, 0.45f, 0.75f, 1f); // Doppelfund-Kennzeichnung
 
     /// <summary>
     /// Farbverlauf für die "Slots"-Spalte: sattes Grün bei &gt;= greenAt freien
@@ -54,8 +55,6 @@ public class MainWindow : Window
     private string characterTabSearch = string.Empty;
 
     // --- Item-Tab ---
-    private List<ItemDefinition>? itemTabDraft;
-    private bool itemTabDirty;
     private string newItemSearchQuery = string.Empty;
     private string lastSearchedItemQuery = string.Empty;
     private List<(uint ItemId, string NameDe, string? NameEn, bool CanBeHq, uint PriceNq, uint PriceHq, uint StackSize)> itemSearchResults = new();
@@ -308,7 +307,7 @@ public class MainWindow : Window
         {
             foreach (var (key, _) in item.Variants())
             {
-                var itemTotal = worldList.Sum(w => w.VisibleCharacters.Sum(c => c.ItemCounts.TryGetValue(key, out var v) ? v : 0));
+                var itemTotal = worldList.Sum(w => w.VisibleCharacters.Sum(c => c.GetTotalCount(key)));
                 total += StackMath.CeilDiv(itemTotal, (int)item.MaxStackSize);
             }
         }
@@ -325,7 +324,7 @@ public class MainWindow : Window
         var filter = searchFilter.Trim();
         var hasFilter = filter.Length > 0;
 
-        if (!ImGui.BeginTable("overview_table", 4,
+        if (!ImGui.BeginTable("overview_table", 5,
                 ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV |
                 ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
@@ -334,6 +333,7 @@ public class MainWindow : Window
         ImGui.TableSetupColumn("Gil", ImGuiTableColumnFlags.WidthFixed, 110);
         ImGui.TableSetupColumn("Stacks", ImGuiTableColumnFlags.WidthFixed, 80);
         ImGui.TableSetupColumn(Loc.Get("Slots", "Slots"), ImGuiTableColumnFlags.WidthFixed, 90);
+        ImGui.TableSetupColumn(Loc.Get("Bag", "Bag"), ImGuiTableColumnFlags.WidthFixed, 90);
         ImGui.TableHeadersRow();
 
         var groups = plugin.Configuration.Worlds.Values
@@ -408,6 +408,8 @@ public class MainWindow : Window
             Tooltip(
                 "Freie Inventarplätze, summiert über alle Charaktere dieses Datenzentrums, die mind. ein Item besitzen und bereits gescannt wurden. Grün = viel Platz, Rot = fast voll.",
                 "Free inventory slots, summed across all characters in this data center that own at least one item and have been scanned. Green = plenty of room, red = nearly full.");
+            ImGui.TableNextColumn();
+            ImGui.TextColored(GraySlot, "-"); // Bag ist charakterbezogen, auf DC-Ebene nicht sinnvoll aggregierbar
 
             if (!dcExpanded)
                 continue;
@@ -453,6 +455,8 @@ public class MainWindow : Window
         Tooltip(
             "Freie Inventarplätze, summiert über alle Charaktere dieser Welt, die mind. ein Item besitzen und bereits gescannt wurden. Grün = viel Platz, Rot = fast voll.",
             "Free inventory slots, summed across all characters on this world that own at least one item and have been scanned. Green = plenty of room, red = nearly full.");
+        ImGui.TableNextColumn();
+        ImGui.TextColored(GraySlot, "-"); // Bag ist charakterbezogen, auf Welt-Ebene nicht sinnvoll aggregierbar
 
         if (!worldExpanded)
             return;
@@ -496,6 +500,25 @@ public class MainWindow : Window
                 ? "Free slots in the regular inventory (out of 140). Green = plenty of room, red = nearly full. Updated on every scan."
                 : "Never scanned live yet - unknown how many inventory slots are free. Log in and scan once to capture this.");
 
+        ImGui.TableNextColumn();
+        var hasDuplicate = character.DuplicateFindKeys.Count > 0;
+        if (character.HasKnownSaddlebagSlots)
+        {
+            var bagColor = hasDuplicate ? PinkText : GetSlotColor(character.FreeSaddlebagSlots, 10, 70);
+            ChartHelpers.DrawSlotBar(character.FreeSaddlebagSlots, CharacterData.MaxSaddlebagSlots, bagColor);
+        }
+        else
+        {
+            ImGui.TextColored(GraySlot, "?");
+        }
+        Tooltip(
+            character.HasKnownSaddlebagSlots
+                ? "Freie Plätze in der Chocobo-Satteltasche (von 70). Grün = leer, Rot = voll. Pink = Doppelfund erkannt (Item sowohl im Inventar als auch in der Satteltasche)."
+                : "Noch nie live gescannt - unbekannt, wie viele Satteltaschenplätze frei sind.",
+            character.HasKnownSaddlebagSlots
+                ? "Free slots in the chocobo saddlebag (out of 70). Green = empty, red = full. Pink = duplicate find detected (item found both in inventory and saddlebag)."
+                : "Never scanned live yet - unknown how many saddlebag slots are free.");
+
         if (!charExpanded)
             return;
 
@@ -507,69 +530,83 @@ public class MainWindow : Window
         ImGui.TableNextColumn();
         ImGui.TableNextColumn();
         ImGui.TableNextColumn();
+        ImGui.TableNextColumn();
 
         ImGui.TreePop();
     }
 
     /// <summary>
-    /// Item-Aufschlüsselung eines Charakters, ebenfalls als Tabelle
-    /// (Item | Stück | Stacks). NQ und HQ eines Items erscheinen als eigene
-    /// Zeile ("Item" bzw. "Item (HQ)"), da sie nie zusammen als ein Stack
-    /// zählen. Die "Stück"-Zelle ist als Mini-Heatmap eingefärbt (kräftig =
-    /// viel, relativ zur stärksten Zeile), darunter ein Balkendiagramm für
-    /// den direkten optischen Vergleich.
+    /// Item-Aufschlüsselung eines Charakters als Tabelle mit echter,
+    /// größenverstellbarer Kopfzeile (Item | NQ | HQ | Stacks). NQ und HQ
+    /// eines Items stehen jetzt in EINER Zeile (getrennte Spalten) statt als
+    /// zwei separate Zeilen. Wurde ein Item sowohl im Hauptinventar als auch
+    /// in der Satteltasche gefunden ("Doppelfund"), werden Item-Name und die
+    /// betroffene(n) Spalte(n) pink eingefärbt.
     /// </summary>
     private void DrawItemBreakdownTable(WorldData world, CharacterData character)
     {
         var rows = TrackedItems.All
-            .SelectMany(item => item.Variants().Select(v => (
-                Label: v.CountKey == item.Key ? item.Name : Loc.Get($"{item.Name} (HQ)", $"{item.Name} (HQ)"),
-                Count: character.ItemCounts.TryGetValue(v.CountKey, out var c) ? c : 0,
-                StackSize: (int)item.MaxStackSize)))
+            .Where(item => item.Enabled || character.GetTotalCount(item.Key) > 0 ||
+                           (item.CanBeHq && character.GetTotalCount(item.HqKey) > 0))
+            .Select(item => (
+                Item: item,
+                Nq: character.GetTotalCount(item.Key),
+                Hq: item.CanBeHq ? character.GetTotalCount(item.HqKey) : (int?)null,
+                NqDup: character.DuplicateFindKeys.Contains(item.Key),
+                HqDup: item.CanBeHq && character.DuplicateFindKeys.Contains(item.HqKey)))
             .ToList();
 
-        var ownMax = rows.Count > 0 ? rows.Max(r => r.Count) : 0;
-
-        if (!ImGui.BeginTable($"items_{world.Name}_{character.Name}", 3,
-                ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.Resizable))
+        if (!ImGui.BeginTable($"items_{world.Name}_{character.Name}", 4,
+                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
             return;
 
         ImGui.TableSetupColumn(Loc.Get("Item", "Item"), ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn(Loc.Get("Stueck", "Qty"), ImGuiTableColumnFlags.WidthFixed, 70);
+        ImGui.TableSetupColumn("NQ", ImGuiTableColumnFlags.WidthFixed, 70);
+        ImGui.TableSetupColumn("HQ", ImGuiTableColumnFlags.WidthFixed, 70);
         ImGui.TableSetupColumn("Stacks", ImGuiTableColumnFlags.WidthFixed, 70);
+        ImGui.TableHeadersRow(); // <- diese Kopfzeile lässt sich per Ziehen an den Spaltengrenzen frei anpassen
 
         foreach (var row in rows)
         {
-            var stacks = StackMath.CeilDiv(row.Count, row.StackSize);
+            var stacks = StackMath.CeilDiv(row.Nq, (int)row.Item.MaxStackSize)
+                         + (row.Hq.HasValue ? StackMath.CeilDiv(row.Hq.Value, (int)row.Item.MaxStackSize) : 0);
+            var isDup = row.NqDup || row.HqDup;
 
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(row.Label);
-            ImGui.TableNextColumn();
+            ImGui.TextColored(isDup ? PinkText : Vector4.One, row.Item.Name);
+            if (isDup)
+                Tooltip(
+                    "Doppelfund: dieses Item wurde sowohl im Hauptinventar als auch in der Satteltasche gefunden - beide Mengen wurden zusammengezählt.",
+                    "Duplicate find: this item was found both in the main inventory and in the saddlebag - both amounts were added together.");
 
-            var intensity = ownMax > 0 ? row.Count / (float)ownMax : 0f;
-            var bg = Vector4.Lerp(new Vector4(0.16f, 0.16f, 0.16f, 1f), new Vector4(0.85f, 0.45f, 0.1f, 1f), intensity);
-            ImGui.TableSetBgColor(ImGuiTableBgTarget.CellBg, ImGui.ColorConvertFloat4ToU32(bg));
-            ImGui.TextUnformatted(row.Count.ToString());
+            ImGui.TableNextColumn();
+            ImGui.TextColored(row.NqDup ? PinkText : Vector4.One, row.Nq.ToString());
             Tooltip(
-                "Besessene Stückzahl dieses Items/dieser Qualität. Zellfarbe zeigt die relative Stärke im Vergleich zum eigenen stärksten Item.",
-                "Owned quantity of this item/quality. Cell color shows relative strength compared to this character's own strongest item.");
+                "Besessene NQ-Stückzahl (Hauptinventar + Satteltasche kombiniert).",
+                "Owned NQ quantity (main inventory + saddlebag combined).");
+
+            ImGui.TableNextColumn();
+            if (row.Hq.HasValue)
+            {
+                ImGui.TextColored(row.HqDup ? PinkText : Vector4.One, row.Hq.Value.ToString());
+                Tooltip(
+                    "Besessene HQ-Stückzahl (Hauptinventar + Satteltasche kombiniert).",
+                    "Owned HQ quantity (main inventory + saddlebag combined).");
+            }
+            else
+            {
+                ImGui.TextColored(GraySlot, "-");
+            }
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(stacks.ToString());
             Tooltip(
-                $"Stückzahl ÷ maximale Stapelgröße ({row.StackSize}), aufgerundet - so viele Inventar-Stacks belegt dieses Item.",
-                $"Quantity ÷ max stack size ({row.StackSize}), rounded up - this many inventory stacks this item occupies.");
+                $"NQ-Stückzahl ÷ Stapelgröße ({row.Item.MaxStackSize}) aufgerundet, plus HQ-Stückzahl ÷ Stapelgröße aufgerundet (getrennt berechnet, dann summiert).",
+                $"NQ quantity ÷ stack size ({row.Item.MaxStackSize}) rounded up, plus HQ quantity ÷ stack size rounded up (calculated separately, then summed).");
         }
 
         ImGui.EndTable();
-
-        var barValues = rows.Select(r => (float)r.Count).ToArray();
-        var barMax = barValues.Length > 0 ? barValues.Max() : 0f;
-
-        ImGui.Spacing();
-        ImGui.PlotHistogram("##itembars", barValues, barValues.Length, "", 0f,
-            barMax * 1.1f, new Vector2(260, 60), sizeof(float));
 
         ImGui.Spacing();
         ImGui.TextColored(GoldText, Loc.Get($"Gesamt: {character.TotalGil():N0} Gil", $"Total: {character.TotalGil():N0} Gil"));
@@ -622,6 +659,44 @@ public class MainWindow : Window
     }
 
     /// <summary>Donut-Diagramm für den Gil-Anteil pro Welt oder Datenzentrum am Gesamtumsatz.</summary>
+    /// <summary>Gruppiert Welten nach Welt oder Datenzentrum und wendet den gewünschten Wert-Selektor an (Gesamtstand oder Zuwachs).</summary>
+    private List<ChartHelpers.Segment> BuildDistributionSegments(Func<WorldData, long> valueSelector, int groupMode)
+    {
+        if (groupMode == 0)
+        {
+            return plugin.Configuration.Worlds.Values
+                .Select(w => (World: w, Value: valueSelector(w)))
+                .Where(x => x.Value > 0)
+                .OrderByDescending(x => x.Value)
+                .Select((x, i) => new ChartHelpers.Segment(x.World.Name, x.Value, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
+                .ToList();
+        }
+
+        return plugin.Configuration.Worlds.Values
+            .GroupBy(w => DataCenters.GetDataCenter(w.Name))
+            .Select(g => (Label: g.Key, Value: g.Sum(valueSelector)))
+            .Where(x => x.Value > 0)
+            .OrderByDescending(x => x.Value)
+            .Select((x, i) => new ChartHelpers.Segment(x.Label, x.Value, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
+            .ToList();
+    }
+
+    /// <summary>Gil-Stand einer Welt zum Zeitpunkt des letzten Speichern/Export-Checkpoints, ermittelt aus dem Verlauf.</summary>
+    private long GetWorldGilAtCheckpoint(WorldData world, DateTime checkpoint)
+    {
+        var cfg = plugin.Configuration;
+        long total = 0;
+        foreach (var character in world.VisibleCharacters)
+        {
+            var entry = cfg.History
+                .Where(h => h.World == world.Name && h.Character == character.Name && h.Timestamp <= checkpoint)
+                .OrderByDescending(h => h.Timestamp)
+                .FirstOrDefault();
+            total += entry?.TotalGil ?? 0;
+        }
+        return total;
+    }
+
     private void DrawGilDistributionSection()
     {
         if (!ImGui.CollapsingHeader(Loc.Get("📊 Gil-Verteilung", "📊 Gil Distribution")))
@@ -633,28 +708,36 @@ public class MainWindow : Window
         ImGui.Spacing();
 
         var cfg = plugin.Configuration;
-        List<ChartHelpers.Segment> segments;
+        var totalSegments = BuildDistributionSegments(w => w.TotalGil(), distributionGroupMode);
 
-        if (distributionGroupMode == 0)
+        List<ChartHelpers.Segment>? growthSegments = null;
+        if (cfg.LastCheckpointTimestamp.HasValue)
         {
-            segments = cfg.Worlds.Values
-                .Where(w => w.TotalGil() > 0)
-                .OrderByDescending(w => w.TotalGil())
-                .Select((w, i) => new ChartHelpers.Segment(w.Name, w.TotalGil(), ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
-                .ToList();
+            var checkpoint = cfg.LastCheckpointTimestamp.Value;
+            growthSegments = BuildDistributionSegments(
+                w => Math.Max(0, w.TotalGil() - GetWorldGilAtCheckpoint(w, checkpoint)), distributionGroupMode);
         }
+
+        var startPos = ImGui.GetCursorPos();
+        const float columnWidth = 300f;
+
+        ImGui.TextUnformatted(Loc.Get("Gesamtstand", "Total"));
+        ChartHelpers.DrawDonutChart(totalSegments, 80f, $"{cfg.GlobalTotalGil():N0}\nGil");
+        var endY1 = ImGui.GetCursorPosY();
+
+        ImGui.SetCursorPos(new Vector2(startPos.X + columnWidth, startPos.Y));
+        ImGui.TextUnformatted(Loc.Get("Zuwachs seit letztem Speichern/Export", "Growth since last save/export"));
+        if (growthSegments == null)
+            ImGui.TextDisabled(Loc.Get("Noch nicht gespeichert/exportiert.", "Not saved/exported yet."));
+        else if (growthSegments.Count == 0)
+            ImGui.TextDisabled(Loc.Get(
+                "Noch kein Zuwachs seit dem letzten Speichern/Export.",
+                "No growth since the last save/export yet."));
         else
-        {
-            segments = cfg.Worlds.Values
-                .GroupBy(w => DataCenters.GetDataCenter(w.Name))
-                .Select(g => (Label: g.Key, Value: g.Sum(w => w.TotalGil())))
-                .Where(x => x.Value > 0)
-                .OrderByDescending(x => x.Value)
-                .Select((x, i) => new ChartHelpers.Segment(x.Label, x.Value, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
-                .ToList();
-        }
+            ChartHelpers.DrawDonutChart(growthSegments, 80f, $"+{growthSegments.Sum(s => s.Value):N0}\nGil");
+        var endY2 = ImGui.GetCursorPosY();
 
-        ChartHelpers.DrawDonutChart(segments, 90f, $"{cfg.GlobalTotalGil():N0}\nGil");
+        ImGui.SetCursorPos(new Vector2(startPos.X, MathF.Max(endY1, endY2)));
     }
 
     /// <summary>Gestapeltes Balkendiagramm je Welt: Aufteilung des Welt-Gilwerts auf die 8 Items.</summary>
@@ -676,7 +759,7 @@ public class MainWindow : Window
                     long gil = 0;
                     foreach (var (key, price) in item.Variants())
                     {
-                        var qty = world.VisibleCharacters.Sum(c => c.ItemCounts.TryGetValue(key, out var v) ? v : 0);
+                        var qty = world.VisibleCharacters.Sum(c => c.GetTotalCount(key));
                         gil += (long)qty * price;
                     }
                     return new ChartHelpers.Segment(item.Name, gil, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]);
@@ -718,7 +801,7 @@ public class MainWindow : Window
 
     /// <summary>Kombinierte NQ+HQ-Stückzahl eines Items bei einem Charakter (für die Heatmap - grobe Übersicht, kein Stack-Wert).</summary>
     private static int CombinedCount(CharacterData character, ItemDefinition item) =>
-        item.Variants().Sum(v => character.ItemCounts.TryGetValue(v.CountKey, out var c) ? c : 0);
+        item.Variants().Sum(v => character.GetTotalCount(v.CountKey));
 
     private void DrawWorldHeatmapTable(WorldData world)
     {
@@ -879,7 +962,7 @@ public class MainWindow : Window
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextColored(RedText, Loc.Get("Gefahrenzone", "Danger zone"));
+        ImGui.TextColored(RedText, Loc.Get("Gefahrenzone (Werkseinstellung)", "Danger zone (Factory reset)"));
         ImGui.TextDisabled(Loc.Get(
             "Löscht die komplette Overlay-Struktur (alle Welten & Charaktere",
             "Deletes the complete overlay structure (all worlds & characters"));
@@ -959,7 +1042,7 @@ public class MainWindow : Window
         var filter = characterTabSearch.Trim();
         var now = DateTime.Now;
 
-        (string World, CharacterData? Delete) pendingDelete = (string.Empty, null);
+        (string World, CharacterData? Archive) pendingArchive = (string.Empty, null);
 
         if (ImGui.BeginTable("character_tab_table", 9,
                 ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY,
@@ -978,7 +1061,7 @@ public class MainWindow : Window
 
             foreach (var world in plugin.Configuration.Worlds.Values.OrderBy(w => w.Name))
             {
-                foreach (var character in world.Characters)
+                foreach (var character in world.Characters.Where(c => !c.IsArchived))
                 {
                     if (filter.Length > 0 &&
                         !world.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) &&
@@ -1032,44 +1115,128 @@ public class MainWindow : Window
                     if (ImGui.Button(Loc.Get("Löschen", "Delete") + $"##del_{world.Name}_{character.Name}"))
                     {
                         if (ImGui.GetIO().KeyCtrl)
-                            ImGui.OpenPopup($"ConfirmDeleteChar_{world.Name}_{character.Name}");
+                            pendingArchive = (world.Name, character);
                     }
 
                     if (ImGui.IsItemHovered())
                         ImGui.SetTooltip(Loc.Get(
-                            "STRG (CTRL) gedrückt halten und klicken, um wirklich zu löschen.",
-                            "Hold CTRL and click to actually delete."));
-
-                    if (ImGui.BeginPopup($"ConfirmDeleteChar_{world.Name}_{character.Name}"))
-                    {
-                        ImGui.TextColored(RedText, Loc.Get(
-                            $"\"{character.Name}\" aus \"{world.Name}\" wirklich löschen?",
-                            $"Really delete \"{character.Name}\" from \"{world.Name}\"?"));
-                        ImGui.TextDisabled(Loc.Get(
-                            "Der Verlauf dieses Charakters bleibt erhalten.",
-                            "This character's history is kept."));
-                        ImGui.Spacing();
-                        if (ImGui.Button(Loc.Get("Ja, löschen", "Yes, delete"), new Vector2(120, 26)))
-                        {
-                            pendingDelete = (world.Name, character);
-                            ImGui.CloseCurrentPopup();
-                        }
-                        ImGui.SameLine();
-                        if (ImGui.Button(Loc.Get("Abbrechen", "Cancel"), new Vector2(100, 26)))
-                            ImGui.CloseCurrentPopup();
-                        ImGui.EndPopup();
-                    }
+                            "STRG (CTRL) gedrückt halten und klicken. Verschiebt den Charakter reversibel ins \"Feld der Ehre\" (Edit-Tab, ganz unten) - nichts wird dabei zerstört.",
+                            "Hold CTRL and click. Reversibly moves the character to the \"Field of Honor\" (bottom of the Edit tab) - nothing is destroyed."));
                 }
             }
 
             ImGui.EndTable();
         }
 
-        if (pendingDelete.Delete != null)
+        if (pendingArchive.Archive != null)
+            plugin.ArchiveCharacter(pendingArchive.World, pendingArchive.Archive.Name);
+
+        DrawFieldOfHonorSection();
+    }
+
+    /// <summary>
+    /// "Feld der Ehre" / "Field of Honor": Liste aller archivierten
+    /// ("gelöschten") Charaktere. "Pulse of Life!" macht die Archivierung
+    /// vollständig rückgängig. "Aetherial Sea" löst den Charakter dagegen
+    /// TATSÄCHLICH und endgültig auf (mit eigener Sicherheitsabfrage) - der
+    /// Verlauf bleibt aber auch dann erhalten.
+    /// </summary>
+    private void DrawFieldOfHonorSection()
+    {
+        var archived = plugin.Configuration.Worlds.Values
+            .SelectMany(w => w.Characters.Where(c => c.IsArchived).Select(c => (World: w, Character: c)))
+            .OrderByDescending(x => x.Character.ArchivedAt)
+            .ToList();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        if (!ImGui.CollapsingHeader(Loc.Get("Feld der Ehre", "Field of Honor") + $" ({archived.Count})"))
+            return;
+
+        ImGui.TextDisabled(Loc.Get(
+            "Archivierte Charaktere - komplett aus Tool/Verlauf/Ranking/Export ausgeblendet, aber nichts wurde gelöscht.",
+            "Archived characters - completely hidden from Tool/History/Ranking/Export, but nothing was deleted."));
+        ImGui.Spacing();
+
+        if (archived.Count == 0)
         {
-            plugin.DeleteCharacter(pendingDelete.World, pendingDelete.Delete.Name);
+            ImGui.TextDisabled(Loc.Get("Noch niemand hier.", "Nobody here yet."));
+            return;
+        }
+
+        (string World, CharacterData? Restore) pendingRestore = (string.Empty, null);
+        (string World, CharacterData? Erase) pendingErase = (string.Empty, null);
+
+        if (ImGui.BeginTable("field_of_honor_table", 5,
+                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
+        {
+            ImGui.TableSetupColumn(Loc.Get("Datenzentrum / Welt / Charakter", "Data Center / World / Character"), ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupColumn(Loc.Get("Verstorben", "Died"), ImGuiTableColumnFlags.WidthFixed, 110);
+            ImGui.TableSetupColumn("Pulse of Life!", ImGuiTableColumnFlags.WidthFixed, 110);
+            ImGui.TableSetupColumn("Aetherial Sea", ImGuiTableColumnFlags.WidthFixed, 110);
+            ImGui.TableHeadersRow();
+
+            foreach (var (world, character) in archived)
+            {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted($"{DataCenters.GetDataCenter(world.Name)} / {world.Name} / {character.Name}");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(character.ArchivedAt?.ToString("dd.MM.yyyy") ?? "-");
+
+                ImGui.TableNextColumn();
+                if (ImGui.Button($"Pulse of Life!##pol_{world.Name}_{character.Name}"))
+                    pendingRestore = (world.Name, character);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(Loc.Get(
+                        "Macht die Archivierung vollständig rückgängig - der Charakter ist danach wieder ganz normal aktiv.",
+                        "Fully reverses the archiving - the character is fully active again afterward."));
+
+                ImGui.TableNextColumn();
+                if (ImGui.Button($"Aetherial Sea##sea_{world.Name}_{character.Name}"))
+                {
+                    if (ImGui.GetIO().KeyCtrl)
+                        ImGui.OpenPopup($"ConfirmErase_{world.Name}_{character.Name}");
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(Loc.Get(
+                        "STRG (CTRL) gedrückt halten und klicken. Löst den Charakter WIRKLICH und endgültig auf - nicht mehr rückgängig zu machen. Der Verlauf bleibt trotzdem erhalten.",
+                        "Hold CTRL and click. REALLY and permanently dissolves the character - cannot be undone. History is still kept."));
+
+                if (ImGui.BeginPopup($"ConfirmErase_{world.Name}_{character.Name}"))
+                {
+                    ImGui.TextColored(RedText, Loc.Get(
+                        $"\"{character.Name}\" aus \"{world.Name}\" WIRKLICH endgültig auflösen?",
+                        $"REALLY permanently dissolve \"{character.Name}\" from \"{world.Name}\"?"));
+                    ImGui.TextDisabled(Loc.Get(
+                        "Das kann NICHT rückgängig gemacht werden. Der Verlauf bleibt erhalten.",
+                        "This CANNOT be undone. History is kept."));
+                    ImGui.Spacing();
+                    if (ImGui.Button(Loc.Get("Ja, endgültig auflösen", "Yes, dissolve permanently"), new Vector2(170, 26)))
+                    {
+                        pendingErase = (world.Name, character);
+                        ImGui.CloseCurrentPopup();
+                    }
+                    ImGui.SameLine();
+                    if (ImGui.Button(Loc.Get("Abbrechen", "Cancel"), new Vector2(100, 26)))
+                        ImGui.CloseCurrentPopup();
+                    ImGui.EndPopup();
+                }
+            }
+
+            ImGui.EndTable();
+        }
+
+        if (pendingRestore.Restore != null)
+        {
+            plugin.RestoreCharacter(pendingRestore.World, pendingRestore.Restore.Name);
             plugin.RefreshAfterCharacterTabChange();
         }
+
+        if (pendingErase.Erase != null)
+            plugin.PermanentlyDeleteCharacter(pendingErase.World, pendingErase.Erase.Name);
     }
 
     /// <summary>
@@ -1189,7 +1356,7 @@ public class MainWindow : Window
             .Where(h => h.World == selectedHistoryWorld)
             .Select(h => h.Character)
             .Distinct()
-            .Where(name => cfg.FindCharacter(selectedHistoryWorld, name)?.HiddenFromRevenueHistory != true)
+            .Where(name => cfg.FindCharacter(selectedHistoryWorld, name) is { } fc && !fc.HiddenFromRevenueHistory && !fc.IsArchived)
             .OrderBy(c => c)
             .ToList();
 
@@ -1336,7 +1503,7 @@ public class MainWindow : Window
         var cfg = plugin.Configuration;
         var rows = cfg.History
             .Where(h => DataCenters.GetDataCenter(h.World) == dataCenter && h.Timestamp >= start && h.Timestamp <= now)
-            .Where(h => cfg.FindCharacter(h.World, h.Character)?.HiddenFromRanking != true)
+            .Where(h => cfg.FindCharacter(h.World, h.Character) is { } fc2 && !fc2.HiddenFromRanking && !fc2.IsArchived)
             .GroupBy(h => (h.World, h.Character))
             .Select(g =>
             {
@@ -1392,17 +1559,15 @@ public class MainWindow : Window
     /// <summary>
     /// Verwaltung der getrackten Items: aktivieren/deaktivieren per Checkbox
     /// (stoppt nur das Scannen, Werte bleiben in Statistiken erhalten),
-    /// Löschen nur mit gehaltener STRG-Taste (entfernt das Item komplett),
-    /// neue Items per Suche gegen den FFXIV-Item-Katalog hinzufügen. Alle
-    /// Änderungen sind ein Entwurf und werden erst mit "Änderungen sichern!"
-    /// tatsächlich übernommen und gespeichert. Der Nutzer wählt nur EIN Item
-    /// aus - ob NQ, HQ oder beides vorkommt, erkennt das Plugin beim Scan
-    /// selbst und zählt/rechnet beide Varianten von da an getrennt.
+    /// Löschen nur mit gehaltener STRG-Taste (entfernt das Item komplett).
+    /// Jede Änderung (Checkbox, Hinzufügen, Löschen) wird SOFORT gespeichert
+    /// und stößt einen Hintergrund-Scan an - kein separater "Änderungen
+    /// sichern"-Schritt mehr nötig. Der Nutzer wählt nur EIN Item aus - ob
+    /// NQ, HQ oder beides vorkommt, erkennt das Plugin beim Scan selbst und
+    /// zählt/rechnet beide Varianten von da an getrennt.
     /// </summary>
     private void DrawItemTab()
     {
-        itemTabDraft ??= TrackedItems.CloneList(TrackedItems.All);
-
         ImGui.TextUnformatted(Loc.Get("Getrackte Items", "Tracked items"));
         ImGui.TextDisabled(Loc.Get(
             "Häkchen = wird aktiv gescannt. Deaktivieren stoppt nur das Scannen -",
@@ -1429,16 +1594,13 @@ public class MainWindow : Window
             ImGui.TableSetupColumn("##delete", ImGuiTableColumnFlags.WidthFixed, 100);
             ImGui.TableHeadersRow();
 
-            foreach (var item in itemTabDraft)
+            foreach (var item in TrackedItems.All)
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 var enabled = item.Enabled;
                 if (ImGui.Checkbox($"##enabled_{item.Key}", ref enabled))
-                {
-                    item.Enabled = enabled;
-                    itemTabDirty = true;
-                }
+                    plugin.SetTrackedItemEnabled(item, enabled);
 
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(item.Name);
@@ -1464,10 +1626,7 @@ public class MainWindow : Window
         }
 
         if (toDelete != null)
-        {
-            itemTabDraft.Remove(toDelete);
-            itemTabDirty = true;
-        }
+            plugin.RemoveTrackedItem(toDelete);
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -1498,19 +1657,33 @@ public class MainWindow : Window
             {
                 foreach (var result in itemSearchResults)
                 {
+                    var alreadyInList = TrackedItems.All.Any(i => i.ItemId == result.ItemId);
                     var priceLabel = result.CanBeHq
                         ? $"{result.PriceNq:N0} / {result.PriceHq:N0} Gil"
                         : $"{result.PriceNq:N0} Gil";
-                    var label = $"{result.NameDe} ({priceLabel})";
-                    if (ImGui.Selectable(label, result.ItemId == selectedNewItemId))
+                    var label = alreadyInList
+                        ? $"{result.NameDe} ({priceLabel}) - {Loc.Get("bereits hinzugefügt", "already added")}"
+                        : $"{result.NameDe} ({priceLabel})";
+
+                    if (alreadyInList)
+                    {
+                        // Bleibt als Vorschlag sichtbar, ist aber ausgegraut und nicht
+                        // auswählbar - verhindert Doppelerfassung desselben Items.
+                        ImGui.BeginDisabled();
+                        ImGui.Selectable(label, false);
+                        ImGui.EndDisabled();
+                    }
+                    else if (ImGui.Selectable(label, result.ItemId == selectedNewItemId))
+                    {
                         selectedNewItemId = result.ItemId;
+                    }
                 }
 
                 ImGui.EndCombo();
             }
 
             ImGui.SameLine();
-            var alreadyAdded = selectedNewItemId.HasValue && itemTabDraft.Any(i => i.ItemId == selectedNewItemId.Value);
+            var alreadyAdded = selectedNewItemId.HasValue && TrackedItems.All.Any(i => i.ItemId == selectedNewItemId.Value);
             var canAdd = selectedNewItemId.HasValue && !alreadyAdded;
 
             if (!canAdd)
@@ -1519,7 +1692,7 @@ public class MainWindow : Window
             if (ImGui.Button("+", new Vector2(30, 0)))
             {
                 var picked = itemSearchResults.First(r => r.ItemId == selectedNewItemId!.Value);
-                itemTabDraft.Add(new ItemDefinition
+                plugin.AddTrackedItem(new ItemDefinition
                 {
                     Key = picked.ItemId.ToString(),
                     NameDe = picked.NameDe,
@@ -1531,7 +1704,6 @@ public class MainWindow : Window
                     MaxStackSize = picked.StackSize,
                     Enabled = true,
                 });
-                itemTabDirty = true;
                 newItemSearchQuery = string.Empty;
                 lastSearchedItemQuery = string.Empty;
                 itemSearchResults = new List<(uint, string, string?, bool, uint, uint, uint)>();
@@ -1540,23 +1712,10 @@ public class MainWindow : Window
 
             if (!canAdd)
                 ImGui.EndDisabled();
-
-            if (alreadyAdded)
-                ImGui.TextDisabled(Loc.Get("Dieses Item ist bereits in der Liste.", "This item is already in the list."));
         }
         else if (lastSearchedItemQuery.Length > 0)
         {
             ImGui.TextDisabled(Loc.Get("Keine Treffer.", "No matches."));
-        }
-
-        if (itemTabDirty)
-        {
-            ImGui.Spacing();
-            if (ImGui.Button(Loc.Get("Änderungen sichern!", "Save changes!"), new Vector2(180, 30)))
-            {
-                plugin.SaveTrackedItems(itemTabDraft);
-                itemTabDirty = false;
-            }
         }
     }
 }

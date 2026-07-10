@@ -3,7 +3,7 @@
     "Author": "Irie",
     "Name": "Peanuts",
     "InternalName": "PeanutsPlugin",
-    "AssemblyVersion": "1.0.1.0",
+    "AssemblyVersion": "1.1.0.0",
     "Description": "Scrape together the existing pieces of jewelry and eagerly note down the quantity and current owner in Tataru's small notebook.",
     "Punchline": "Tracks salvaged-jewelry and other stuff counts per character/world.",
     "ApplicableVersion": "any",
@@ -11,8 +11,8 @@
     "RepoUrl": "https://github.com/Irietiert/PeanutsPlugin",
     "IconUrl": "https://raw.githubusercontent.com/Irietiert/PeanutsPlugin/main/images/icon.png",
     "AcceptsFeedback": true,
-    "DownloadLinkInstall": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.0.1/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.0.1/latest.zip",
-    "DownloadLinkTesting": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.0.1/latest.zip"
+    "DownloadLinkInstall": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.1.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.1.0/latest.zip",
+    "DownloadLinkTesting": "https://github.com/Irietiert/PeanutsPlugin/releases/download/v1.1.0/latest.zip"
   }
 ]

@@ -56,7 +56,7 @@ public static class ExcelExporter
 
         foreach (var world in config.Worlds.Values)
         {
-            foreach (var character in world.Characters.Where(c => !c.HiddenFromExport))
+            foreach (var character in world.Characters.Where(c => !c.HiddenFromExport && !c.IsArchived))
             {
                 col = 1;
                 sheet.Cell(row, col++).Value = world.Name;
@@ -66,7 +66,7 @@ public static class ExcelExporter
                 {
                     foreach (var (key, _) in item.Variants())
                     {
-                        character.ItemCounts.TryGetValue(key, out var qty);
+                        var qty = character.GetTotalCount(key);
                         sheet.Cell(row, col++).Value = qty;
                     }
                 }

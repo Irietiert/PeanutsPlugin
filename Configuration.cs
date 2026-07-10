@@ -125,8 +125,7 @@ public class Configuration : IPluginConfiguration
         {
             foreach (var (key, _) in item.Variants())
             {
-                var itemTotal = Worlds.Values.Sum(w => w.VisibleCharacters.Sum(c =>
-                    c.ItemCounts.TryGetValue(key, out var count) ? count : 0));
+                var itemTotal = Worlds.Values.Sum(w => w.VisibleCharacters.Sum(c => c.GetTotalCount(key)));
                 total += StackMath.CeilDiv(itemTotal, (int)item.MaxStackSize);
             }
         }

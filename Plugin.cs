@@ -5,6 +5,8 @@ using System.Linq;
 using System.Text;
 using Dalamud.Game;
 using Dalamud.Game.Command;
+using Dalamud.Game.Text;
+using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.IoC;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
@@ -207,6 +209,50 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.Save();
     }
 
+    /// <summary>Persistiert die aktuelle (bereits live geänderte) Item-Liste - ohne Chat-Meldung.</summary>
+    private void PersistTrackedItems()
+    {
+        Configuration.TrackedItemList = TrackedItems.All;
+        Configuration.Save();
+    }
+
+    /// <summary>
+    /// Fügt ein neu gesuchtes Item sofort zur aktiven Liste hinzu, speichert
+    /// direkt und stößt einen Hintergrund-Scan an, damit sich die Änderung
+    /// sofort in der Darstellung niederschlägt - kein separater "Änderungen
+    /// sichern"-Schritt mehr nötig.
+    /// </summary>
+    public void AddTrackedItem(ItemDefinition item)
+    {
+        TrackedItems.All.Add(item);
+        PersistTrackedItems();
+        if (activeCharacter != null)
+            ScanOnce();
+    }
+
+    /// <summary>
+    /// Entfernt ein Item komplett, speichert direkt, druckt NUR "Name -
+    /// Gelöscht" (keine weiteren Meldungen) und stößt einen Hintergrund-Scan
+    /// an, damit es sofort aus der Darstellung verschwindet.
+    /// </summary>
+    public void RemoveTrackedItem(ItemDefinition item)
+    {
+        TrackedItems.All.Remove(item);
+        PersistTrackedItems();
+        ChatGui.Print($"{item.Name} - {Loc.Get("Gelöscht", "Deleted")}");
+        if (activeCharacter != null)
+            ScanOnce();
+    }
+
+    /// <summary>Schaltet ein Item aktiv/inaktiv (Checkbox im Item-Tab), speichert sofort und scannt im Hintergrund nach.</summary>
+    public void SetTrackedItemEnabled(ItemDefinition item, bool enabled)
+    {
+        item.Enabled = enabled;
+        PersistTrackedItems();
+        if (activeCharacter != null)
+            ScanOnce();
+    }
+
     private void OnToggleWindow(string command, string args) => mainWindow.Toggle();
 
     private void OnTotalCommand(string command, string args) => PrintTotalsToChat();
@@ -351,11 +397,22 @@ public sealed class Plugin : IDalamudPlugin
         if (!ClientState.IsLoggedIn || ObjectTable.LocalPlayer == null)
             return;
 
-        var counts = scanner.ScanInventory();
-        foreach (var kv in counts)
-            activeCharacter.ItemCounts[kv.Key] = kv.Value;
+        var result = scanner.ScanInventory();
 
-        activeCharacter.UsedSlots = scanner.GetUsedInventorySlots();
+        foreach (var kv in result.Inventory)
+            activeCharacter.ItemCounts[kv.Key] = kv.Value;
+        foreach (var kv in result.Saddlebag)
+            activeCharacter.SaddlebagCounts[kv.Key] = kv.Value;
+
+        // Doppelfund: Variant-Key ist SOWOHL im Hauptinventar ALS AUCH in der
+        // Satteltasche mit Stückzahl > 0 vorhanden.
+        activeCharacter.DuplicateFindKeys = result.Inventory
+            .Where(kv => kv.Value > 0 && result.Saddlebag.TryGetValue(kv.Key, out var bagQty) && bagQty > 0)
+            .Select(kv => kv.Key)
+            .ToHashSet();
+
+        activeCharacter.UsedSlots = result.UsedInventorySlots;
+        activeCharacter.UsedSaddlebagSlots = result.UsedSaddlebagSlots;
         activeCharacter.LastScannedAt = DateTime.Now;
 
         Configuration.Save();
@@ -372,12 +429,47 @@ public sealed class Plugin : IDalamudPlugin
             LastCompletedWorld = CurrentWorldName;
             LastCompletedCharacter = CurrentCharacterName;
 
-            ChatGui.Print(Loc.Get(
-                "[Peanuts] Erfassung abgeschlossen - alle 8 Items erkannt. " +
-                "Tool läuft im Hintergrund weiter und übernimmt spätere Änderungen automatisch.",
-                "[Peanuts] Scan complete - all 8 items detected. " +
-                "The tool keeps running in the background and picks up later changes automatically."));
+            PrintCompletionMessage(TotalSearchableVariantCount(), activeCharacter.DuplicateFindKeys.Count > 0);
         }
+    }
+
+    /// <summary>
+    /// Anzahl aller aktiven Item-VARIANTEN (NQ zählt 1, ein zusätzlich
+    /// HQ-fähiges Item zählt 2) - die dynamische Ersetzung für die früher
+    /// hart codierte "alle 8 Items"-Meldung, da inzwischen beliebig viele
+    /// eigene Items hinzugefügt werden können.
+    /// </summary>
+    private static int TotalSearchableVariantCount() =>
+        TrackedItems.All.Where(i => i.Enabled).Sum(i => i.CanBeHq ? 2 : 1);
+
+    /// <summary>
+    /// Druckt die "Erfassung abgeschlossen"-Meldung. Bei einem Doppelfund
+    /// (Item sowohl im Hauptinventar als auch in der Satteltasche gefunden)
+    /// wird zusätzlich "- - Doppelfund!!! - -" in Rot eingeblendet.
+    /// </summary>
+    private void PrintCompletionMessage(int targetCount, bool hasDuplicate)
+    {
+        var prefixDe = $"[Peanuts] Erfassung abgeschlossen - alle {targetCount} erkannt. ";
+        var prefixEn = $"[Peanuts] Scan complete - all {targetCount} detected. ";
+        var suffixDe = "Tool läuft im Hintergrund weiter und übernimmt spätere Änderungen automatisch.";
+        var suffixEn = "The tool keeps running in the background and picks up later changes automatically.";
+
+        if (!hasDuplicate)
+        {
+            ChatGui.Print(Loc.Get(prefixDe + suffixDe, prefixEn + suffixEn));
+            return;
+        }
+
+        // Farbschlüssel 17 = Rot im UIColor-Sheet des Spiels (Best-Effort -
+        // falls die Farbe bei dir nicht rot erscheint, bitte Rückmeldung
+        // geben, dann passen wir den Farbschlüssel hier zentral an).
+        const ushort redColorKey = 17;
+        var builder = new SeStringBuilder()
+            .AddText(Loc.Get(prefixDe, prefixEn))
+            .AddUiForeground("- - Doppelfund!!! - -", redColorKey)
+            .AddText(" " + Loc.Get(suffixDe, suffixEn));
+
+        ChatGui.Print(new XivChatEntry { Message = builder.Build() });
     }
 
     /// <summary>
@@ -387,7 +479,12 @@ public sealed class Plugin : IDalamudPlugin
     /// seiner Welt, sodass im "Verlauf"-Tab jeder Charakter einzeln über die
     /// Zeit nachvollzogen werden kann.
     /// </summary>
-    public int SaveSnapshot()
+    /// <param name="silent">
+    /// True, wenn dies durch eine Änderung im Edit-Tab -> "Charakter" ausgelöst
+    /// wurde (Sichtbarkeits-Schalter/Löschen) - dann keine Chat-Meldung, die
+    /// eigentliche Speicherfunktion bleibt aber identisch.
+    /// </param>
+    public int SaveSnapshot(bool silent = false)
     {
         var now = DateTime.Now;
         var count = 0;
@@ -401,7 +498,7 @@ public sealed class Plugin : IDalamudPlugin
                     Timestamp = now,
                     World = world.Name,
                     Character = character.Name,
-                    ItemCounts = new Dictionary<string, int>(character.ItemCounts),
+                    ItemCounts = character.GetCombinedCounts(),
                     TotalGil = character.TotalGil(),
                 });
                 count++;
@@ -410,16 +507,18 @@ public sealed class Plugin : IDalamudPlugin
 
         if (count == 0)
         {
-            ChatGui.PrintError(Loc.Get(
-                "[Peanuts] Keine Daten zum Speichern vorhanden.",
-                "[Peanuts] No data available to save."));
+            if (!silent)
+                ChatGui.PrintError(Loc.Get(
+                    "[Peanuts] Keine Daten zum Speichern vorhanden.",
+                    "[Peanuts] No data available to save."));
             return 0;
         }
 
         Configuration.Save();
-        ChatGui.Print(Loc.Get(
-            $"[Peanuts] Snapshot für {count} Charakter(e) gespeichert ({now:dd.MM.yyyy HH:mm}).",
-            $"[Peanuts] Snapshot saved for {count} character(s) ({now:MM/dd/yyyy HH:mm})."));
+        if (!silent)
+            ChatGui.Print(Loc.Get(
+                $"[Peanuts] Snapshot für {count} Charakter(e) gespeichert ({now:dd.MM.yyyy HH:mm}).",
+                $"[Peanuts] Snapshot saved for {count} character(s) ({now:MM/dd/yyyy HH:mm})."));
 
         UpdateCheckpoint();
         return count;
@@ -513,7 +612,14 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var character in world.Characters)
             {
                 foreach (var item in TrackedItems.All)
-                    character.ItemCounts[item.Key] = 0;
+                {
+                    foreach (var (key, _) in item.Variants())
+                    {
+                        character.ItemCounts[key] = 0;
+                        character.SaddlebagCounts[key] = 0;
+                    }
+                }
+                character.DuplicateFindKeys.Clear();
             }
         }
 
@@ -557,16 +663,20 @@ public sealed class Plugin : IDalamudPlugin
     /// Verlauf dieses Charakters bleibt unberührt - nur die aktuelle
     /// Überblicksstruktur verliert ihn.
     /// </summary>
-    public void DeleteCharacter(string worldName, string characterName)
+    /// <summary>
+    /// "Löschen" im Edit-Tab -> "Charakter": verschiebt den Charakter jetzt
+    /// nur noch ins "Feld der Ehre" (archiviert) - komplett reversibel über
+    /// "Pulse of Life!". Blendet ihn sofort aus Tool/History/Ranking/Export
+    /// aus, die zugrunde liegenden Daten bleiben aber vollständig erhalten.
+    /// </summary>
+    public void ArchiveCharacter(string worldName, string characterName)
     {
-        if (!Configuration.Worlds.TryGetValue(worldName, out var world))
-            return;
-
-        var character = world.Characters.FirstOrDefault(c => c.Name == characterName);
+        var character = Configuration.FindCharacter(worldName, characterName);
         if (character == null)
             return;
 
-        world.Characters.Remove(character);
+        character.IsArchived = true;
+        character.ArchivedAt = DateTime.Now;
 
         if (CurrentWorldName == worldName && CurrentCharacterName == characterName)
         {
@@ -578,8 +688,45 @@ public sealed class Plugin : IDalamudPlugin
 
         Configuration.Save();
         ChatGui.Print(Loc.Get(
-            $"[Peanuts] Charakter \"{characterName}\" @ {worldName} wurde gelöscht.",
-            $"[Peanuts] Character \"{characterName}\" @ {worldName} was deleted."));
+            $"[Peanuts] \"{characterName}\" @ {worldName} ins Feld der Ehre verschoben.",
+            $"[Peanuts] \"{characterName}\" @ {worldName} moved to the Field of Honor."));
+    }
+
+    /// <summary>"Pulse of Life!" im Feld der Ehre: holt einen archivierten Charakter vollständig zurück.</summary>
+    public void RestoreCharacter(string worldName, string characterName)
+    {
+        var character = Configuration.FindCharacter(worldName, characterName);
+        if (character == null)
+            return;
+
+        character.IsArchived = false;
+        character.ArchivedAt = null;
+
+        Configuration.Save();
+        ChatGui.Print(Loc.Get(
+            $"[Peanuts] \"{characterName}\" @ {worldName} wiederbelebt.",
+            $"[Peanuts] \"{characterName}\" @ {worldName} revived."));
+    }
+
+    /// <summary>
+    /// "Aetherial Sea" im Feld der Ehre: löst einen archivierten Charakter
+    /// TATSÄCHLICH und endgültig auf - im Gegensatz zu ArchiveCharacter kann
+    /// das NICHT rückgängig gemacht werden. Der Verlauf bleibt trotzdem erhalten.
+    /// </summary>
+    public void PermanentlyDeleteCharacter(string worldName, string characterName)
+    {
+        if (!Configuration.Worlds.TryGetValue(worldName, out var world))
+            return;
+
+        var character = world.Characters.FirstOrDefault(c => c.Name == characterName);
+        if (character == null)
+            return;
+
+        world.Characters.Remove(character);
+        Configuration.Save();
+        ChatGui.Print(Loc.Get(
+            $"[Peanuts] \"{characterName}\" @ {worldName} im Aetherstrom aufgelöst - endgültig.",
+            $"[Peanuts] \"{characterName}\" @ {worldName} dissolved into the aetherial sea - permanently."));
     }
 
     /// <summary>
@@ -590,8 +737,8 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     public void RefreshAfterCharacterTabChange()
     {
-        SaveSnapshot();
-        ExportData();
+        SaveSnapshot(silent: true);
+        ExportData(silent: true);
         if (activeCharacter != null)
             ScanOnce();
     }
@@ -615,13 +762,19 @@ public sealed class Plugin : IDalamudPlugin
     /// statt sie zu überschreiben; bei Excel entsteht bei Monatswechsel
     /// automatisch ein neues Arbeitsblatt.
     /// </summary>
-    public void ExportData()
+    /// <param name="silent">
+    /// True, wenn dies durch eine Änderung im Edit-Tab -> "Charakter" ausgelöst
+    /// wurde - dann keine Chat-Meldungen, die eigentliche Exportfunktion
+    /// bleibt aber identisch (Dateien werden ganz normal geschrieben).
+    /// </param>
+    public void ExportData(bool silent = false)
     {
         if (!Configuration.ExportAsCsv && !Configuration.ExportAsExcel)
         {
-            ChatGui.PrintError(Loc.Get(
-                "[Peanuts] Kein Exportformat gewählt. Im 'Edit'-Tab CSV und/oder Excel aktivieren.",
-                "[Peanuts] No export format selected. Enable CSV and/or Excel in the 'Edit' tab."));
+            if (!silent)
+                ChatGui.PrintError(Loc.Get(
+                    "[Peanuts] Kein Exportformat gewählt. Im 'Edit'-Tab CSV und/oder Excel aktivieren.",
+                    "[Peanuts] No export format selected. Enable CSV and/or Excel in the 'Edit' tab."));
             return;
         }
 
@@ -633,18 +786,20 @@ public sealed class Plugin : IDalamudPlugin
         {
             var csvPath = Path.Combine(folder, "Tataru's Note.csv");
             CsvExporter.Export(Configuration, csvPath);
-            ChatGui.Print(Loc.Get(
-                $"[Peanuts] Tataru's Note (CSV) aktualisiert: {csvPath}",
-                $"[Peanuts] Tataru's Note (CSV) updated: {csvPath}"));
+            if (!silent)
+                ChatGui.Print(Loc.Get(
+                    $"[Peanuts] Tataru's Note (CSV) aktualisiert: {csvPath}",
+                    $"[Peanuts] Tataru's Note (CSV) updated: {csvPath}"));
         }
 
         if (Configuration.ExportAsExcel)
         {
             var xlsxPath = Path.Combine(folder, "Tataru's Note.xlsx");
             ExcelExporter.Export(Configuration, xlsxPath);
-            ChatGui.Print(Loc.Get(
-                $"[Peanuts] Tataru's Note (Excel) aktualisiert: {xlsxPath}",
-                $"[Peanuts] Tataru's Note (Excel) updated: {xlsxPath}"));
+            if (!silent)
+                ChatGui.Print(Loc.Get(
+                    $"[Peanuts] Tataru's Note (Excel) aktualisiert: {xlsxPath}",
+                    $"[Peanuts] Tataru's Note (Excel) updated: {xlsxPath}"));
         }
 
         // Referenzstand für die "Seit letztem Speichern/Export"-Delta-Anzeige im Tool-Tab sichern.
