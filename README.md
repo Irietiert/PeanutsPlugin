@@ -50,6 +50,8 @@ a human. Every line was compiled and played before release; several AI mistakes
 (a non-existent field name, an ImGui pointer/value mix-up, a wrong assumption
 about how the chocobo saddlebag works) were caught that way.
 
+The plugin icon is currently **AI-generated**. A hand-made replacement is planned.
+
 ## How items are detected
 
 Every tracked item carries its own resolved `ItemId`, German/English name,
@@ -130,6 +132,12 @@ languages, and carries the sender's name.
   **never scanned and never overwrite your own characters**. A character is
   identified by world + name (unique in FFXIV), so re-importing simply updates
   it - no duplicates, no accumulation.
+- The first time a file from a new sender arrives, Peanuts asks **who it belongs
+  to** and you give them a nickname. Every later import from that sender is
+  applied automatically under that nickname - even when new characters are
+  included. If the sender's name changes (e.g. they exported from a different
+  alt), Peanuts matches the characters against existing imports and suggests the
+  right player.
 - Set a **stable share name** so that exporting from a different alt doesn't
   appear as a second player on the recipient's side.
 - Imported players don't count towards your totals by default - they're there to
@@ -242,6 +250,8 @@ Veröffentlichung kompiliert und im Spiel geprüft; mehrere KI-Fehler (ein nicht
 existierender Feldname, eine Zeiger/Wert-Verwechslung in ImGui, eine falsche
 Annahme über die Chocobo-Satteltasche) wurden dabei gefunden.
 
+Das Plugin-Icon ist derzeit **KI-generiert**. Ein selbst erstelltes Icon ist geplant.
+
 ## Wie die Items erkannt werden
 
 Jedes getrackte Item trägt seine eigene aufgelöste `ItemId`, den
@@ -327,6 +337,12 @@ also über Client-Sprachen hinweg, und trägt den Namen des Absenders.
   Charakter ist über Welt + Name eindeutig (in FFXIV kann es auf einer Welt keine
   zwei gleichnamigen Charaktere geben), ein erneuter Import aktualisiert ihn also
   einfach - keine Dubletten, kein Aufaddieren.
+- Kommt eine Datei von einem noch unbekannten Absender, fragt Peanuts, **wem sie
+  gehört**, und du vergibst einen Spitznamen. Jeder weitere Import desselben
+  Absenders wird automatisch unter diesem Spitznamen übernommen - auch dann, wenn
+  neue Charaktere dazugekommen sind. Ändert sich der Absender-Name (z.B. weil von
+  einem anderen Alt exportiert wurde), gleicht Peanuts die Charaktere mit den
+  bisherigen Importen ab und schlägt den passenden Spieler vor.
 - Ein **stabiler Freigabe-Name** sorgt dafür, dass ein Export von einem anderen
   Alt beim Empfänger nicht als zweiter Spieler ankommt.
 - Importierte Spieler zählen standardmäßig **nicht** in deine Gesamtsummen - sie

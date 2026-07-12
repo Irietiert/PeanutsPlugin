@@ -20,6 +20,12 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     default (toggle "Include imported in totals" to get a combined stock).
   - A character is identified by **world + name** (unique in FFXIV), so a
     re-import updates in place - it never duplicates or accumulates.
+  - **Owner assignment on import**: the first time a file from a new sender
+    arrives, Peanuts asks who it belongs to and you give them a nickname. Every
+    later import from that same sender is applied automatically under that
+    nickname - even when new characters are included. If the sender's name in the
+    file changes (e.g. they exported from a different alt), Peanuts matches the
+    characters against existing imports and suggests the right player.
   - A **stable share name** can be set, so exporting from a different alt doesn't
     show up as a second player on the recipient's side.
   - Importing is itself a measurement: it lands in the history with the *sender's*
