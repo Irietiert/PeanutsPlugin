@@ -122,6 +122,107 @@ public sealed class Plugin : IDalamudPlugin
             OnLogin();
     }
 
+    /// <summary>
+    /// Baut aus einer ItemId eine vollständige Item-Definition (Name DE/EN,
+    /// NQ/HQ-Preis, Stapelgröße) - für Items, die per Share-Datei hereinkommen,
+    /// aber lokal noch nicht getrackt werden. Liefert null, wenn die Id im
+    /// Item-Sheet nicht existiert.
+    /// </summary>
+    public ItemDefinition? ResolveItemById(uint itemId)
+    {
+        var germanSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>(ClientLanguage.German);
+        var englishSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>(ClientLanguage.English);
+
+        var row = germanSheet?.GetRowOrDefault(itemId);
+        if (row == null)
+            return null;
+
+        var nameDe = row.Value.Name.ExtractText();
+        if (string.IsNullOrWhiteSpace(nameDe))
+            return null;
+
+        string? nameEn = null;
+        var englishRow = englishSheet?.GetRowOrDefault(itemId);
+        if (englishRow != null)
+            nameEn = englishRow.Value.Name.ExtractText();
+
+        var canBeHq = row.Value.CanBeHq;
+        var priceNq = (uint)row.Value.PriceLow;
+
+        return new ItemDefinition
+        {
+            Key = itemId.ToString(),
+            NameDe = nameDe,
+            NameEn = nameEn,
+            ItemId = itemId,
+            CanBeHq = canBeHq,
+            NpcSalePriceNq = priceNq,
+            NpcSalePriceHq = canBeHq ? ItemDefinition.EstimateHqPrice(priceNq) : 0,
+            MaxStackSize = row.Value.StackSize > 0 ? (uint)row.Value.StackSize : 99u,
+            Enabled = true,
+        };
+    }
+
+    // Nach einem Import: Items aus der Datei, die lokal nicht getrackt werden.
+    // Das UI bietet an, sie hinzuzufügen. Die Datei selbst wird dafür
+    // aufbewahrt, damit sie danach direkt erneut angewendet werden kann -
+    // ohne dass du die Datei nochmal auswählen musst.
+    public List<(uint ItemId, string Name)> PendingUnknownItems { get; private set; } = new();
+    private ShareFile.ShareData? lastImportData;
+    private string lastImportOwner = string.Empty;
+
+    /// <summary>
+    /// Ergänzt die beim letzten Import übersprungenen Items in der eigenen
+    /// Tracking-Liste und wendet denselben Import danach automatisch erneut an -
+    /// diesmal vollständig. Der Besitzer ist bereits bekannt, es muss also nichts
+    /// erneut ausgewählt werden.
+    /// </summary>
+    public void AddMissingItemsAndReimport()
+    {
+        if (lastImportData == null || PendingUnknownItems.Count == 0)
+            return;
+
+        var added = 0;
+        foreach (var (itemId, _) in PendingUnknownItems)
+        {
+            var definition = ResolveItemById(itemId);
+            if (definition == null)
+                continue;
+
+            AddTrackedItem(definition);
+            added++;
+        }
+
+        // Kein einziges Item ließ sich auflösen (unbekannte/ungültige ItemId).
+        // Dann den Dialog schließen, statt ihn bei jedem Klick erneut zu zeigen.
+        if (added == 0)
+        {
+            ChatGui.PrintError(Loc.Get(
+                "[Peanuts] Keines der Items konnte aufgelöst werden - sie werden übersprungen.",
+                "[Peanuts] None of the items could be resolved - they are skipped."));
+            DismissUnknownItems();
+            return;
+        }
+
+        ChatGui.Print(Loc.Get(
+            $"[Peanuts] {added} Item(s) zur Tracking-Liste hinzugefügt.",
+            $"[Peanuts] Added {added} item(s) to the tracking list."));
+
+        var data = lastImportData;
+        var owner = lastImportOwner;
+        DismissUnknownItems();
+
+        // Denselben Import erneut anwenden - jetzt werden die Items erkannt.
+        ApplyImport(data, owner);
+    }
+
+    public void DismissUnknownItems()
+    {
+        PendingUnknownItems = new List<(uint, string)>();
+        lastImportData = null;
+        lastImportOwner = string.Empty;
+    }
+
     private void OnOpenMainUi() => mainWindow.IsOpen = true;
 
     /// <summary>Übernimmt den "Importierte mitzählen"-Schalter in den globalen Filter.</summary>
@@ -246,9 +347,27 @@ public sealed class Plugin : IDalamudPlugin
 
             if (result.UnknownItems > 0)
             {
+                // Unbekannte Items namentlich auflösen (Name folgt der
+                // eingestellten Overlay-Sprache) und zum Hinzufügen anbieten,
+                // statt sie nur als Zahl zu melden.
+                var unknown = new List<(uint ItemId, string Name)>();
+                foreach (var itemId in result.UnknownItemIds)
+                {
+                    var definition = ResolveItemById(itemId);
+                    unknown.Add((itemId, definition?.Name ?? $"#{itemId}"));
+                }
+
+                PendingUnknownItems = unknown;
+                lastImportData = data;
+                lastImportOwner = result.Player;
+
                 ChatGui.Print(Loc.Get(
-                    $"[Peanuts] Hinweis: {result.UnknownItems} Eintrag/Einträge übersprungen - diese Items trackst du selbst nicht.",
-                    $"[Peanuts] Note: {result.UnknownItems} entry/entries skipped - you don't track those items yourself."));
+                    $"[Peanuts] {unknown.Count} Item(s) aus der Datei trackst du nicht: {string.Join(", ", unknown.Select(u => u.Name))}. Im Edit-Tab kannst du sie hinzufügen.",
+                    $"[Peanuts] You don't track {unknown.Count} item(s) from this file: {string.Join(", ", unknown.Select(u => u.Name))}. You can add them in the Edit tab."));
+            }
+            else
+            {
+                DismissUnknownItems();
             }
 
             if (result.OwnCharactersSkipped > 0)

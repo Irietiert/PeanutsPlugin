@@ -50,7 +50,7 @@ a human. Every line was compiled and played before release; several AI mistakes
 (a non-existent field name, an ImGui pointer/value mix-up, a wrong assumption
 about how the chocobo saddlebag works) were caught that way.
 
-The plugin icon is currently **AI-generated**. A hand-made replacement is planned.
+The plugin icon is **hand-drawn**, not AI-generated.
 
 ## How items are detected
 
@@ -119,38 +119,90 @@ warning appended.
 
 ## Sharing & importing (compare with friends / FC stock)
 
-Peanuts can exchange stock data between players. This uses a dedicated
-**share file** (`Peanuts Share.json`), *not* the CSV/Excel exports - those are
-localized, append-only reports without item IDs and are unusable as an import
-source. The share file identifies items by **ID**, so it works across client
-languages, and carries the sender's name.
+Peanuts can exchange stock data between players. Two typical uses:
 
-- **Export my data** writes the share file into your export folder. It contains
-  **only your own characters** - imported data from others is never passed on.
-- **Import share file** reads a share file from that same folder. Imported
-  characters are tagged with their owner, shown as `Name [Owner]`, and are
-  **never scanned and never overwrite your own characters**. A character is
-  identified by world + name (unique in FFXIV), so re-importing simply updates
-  it - no duplicates, no accumulation.
-- The first time a file from a new sender arrives, Peanuts asks **who it belongs
-  to** and you give them a nickname. Every later import from that sender is
-  applied automatically under that nickname - even when new characters are
-  included. If the sender's name changes (e.g. they exported from a different
-  alt), Peanuts matches the characters against existing imports and suggests the
-  right player.
-- Set a **stable share name** so that exporting from a different alt doesn't
-  appear as a second player on the recipient's side.
-- Imported players don't count towards your totals by default - they're there to
-  compare against. Turn on **"Include imported in totals"** to get a shared
-  overall stock (e.g. for an FC); CSV/Excel exports follow the same setting.
-- Imported players can be hidden in bulk (one toggle per player), or removed
-  entirely including their history entries.
-- Slots, bag and stacks are deliberately **not** transferred; imported characters
-  show "?" there.
+- **Compare with friends** - see who hauled in the most this week.
+- **Shared FC stock** - add everyone's numbers into one combined total.
 
-Where to see imported players: the **"By Player"** donut in the Gil distribution,
-the **"Player"** scope in *Growth since first measurement*, and the character
-picker in the **History** tab.
+### The share file
+
+Exchange happens through a dedicated **share file** (`Peanuts Share.json`), *not*
+through the CSV/Excel exports. The reports are localized, append-only logs
+without item IDs - unusable as an import source. The share file instead:
+
+- identifies items by **ID**, so it works across client languages,
+- carries the sender's name,
+- is a **snapshot**, not a diff.
+
+It contains **only item IDs, quality (NQ/HQ), and quantities**. Slots, saddlebag
+and stacks are deliberately not transferred; imported characters show "?" there.
+Gil values are not transferred either - they're recalculated on your side with
+*your* prices, so everyone is measured on the same basis.
+
+### Step by step
+
+**1. Set a share name (once).**
+In the Edit tab, under *Share & import*, enter a **share name**. This is the name
+your data appears under for the recipient. Keep it stable: if you leave it empty,
+the name of the character you happen to be logged in as is used - so exporting
+from a different alt next time would show up as a *second* player on their side.
+
+**2. Export.**
+Click **Export my data**. This writes `Peanuts Share.json` into your export
+folder. The file contains **only your own characters** - imported data from
+others is never passed on. Send that file to whoever wants it.
+
+**3. Import.**
+Drop the other player's file into your export folder and click
+**Import share file**.
+
+- The first time a file from a **new sender** arrives, Peanuts asks who it
+  belongs to and you give them a **nickname**. That nickname is what you'll see
+  everywhere.
+- Every later import from that same sender is applied automatically under that
+  nickname - even when new characters are included.
+- If the sender's name in the file changes (e.g. they exported from a different
+  alt), Peanuts matches the characters against your existing imports and
+  **suggests the right player**.
+
+**4. Handle unknown items.**
+If the file contains items you don't track yourself, Peanuts lists them **by
+name** and asks whether to add them. Say **yes** and they're added with the
+correct prices and stack size, and the import is **re-applied automatically** -
+you don't have to pick the file again. Say **no** and those items are ignored.
+
+> For a meaningful comparison, everyone should track the **same items**. If your
+> friend tracks five items and you track twelve, his total is a subset of yours
+> and he'll look poorer than he is.
+
+### What imported characters do (and don't do)
+
+- They are tagged with their owner and shown as `Name [Owner]`.
+- They are **never scanned** and **never overwrite your own characters**. If a
+  file contains a character you already own, it's skipped - your own live scans
+  win.
+- A character is identified by **world + name** (unique in FFXIV), so re-importing
+  the same player simply **updates** them. Nothing is duplicated, nothing is added
+  up twice. The *history*, however, keeps growing: every import adds a data point
+  with the **sender's export timestamp**, which is what builds their trend curve.
+- They **don't count towards your totals** by default. Turn on **"Include imported
+  in totals"** for a shared FC stock. The CSV/Excel reports follow the same
+  setting, so report and overlay always agree.
+
+### Managing imported players
+
+- **Hide** all of a player's characters at once with the toggle next to their
+  name (the data is kept), or hide individual characters in the character table.
+- **Remove** a player entirely, including their history entries. Their sender
+  mapping is dropped too, so re-importing them will ask for a nickname again.
+
+### Where to see them
+
+- **Gil distribution → "By Player"** - you ("Me") against each imported player.
+- **Growth since first measurement → "Player"** - a ranking with growth and a
+  trend sparkline per player.
+- **History tab** - imported characters appear in the character picker, marked
+  with `[Owner]`.
 
 ## Adjusting sale prices
 
@@ -184,13 +236,8 @@ new worksheet per calendar month. The export folder can be set in the Edit tab.
 - Highlighting a value in a different color right when it changes since the
   last scan (there's a "since last save/export" delta summary, but no
   per-cell flash on individual changes).
-- An in-UI editor for `Configuration.PriceOverrides`.
 - Google Sheets isn't directly supported; the CSV file can be imported
   manually via File → Import.
-- Retainer inventory isn't scanned - only the character's own inventory and
-  saddlebag.
-- Item names are only localized for German/English so far; French/Japanese
-  clients fall back to English.
 
 ---
 
@@ -250,7 +297,7 @@ Veröffentlichung kompiliert und im Spiel geprüft; mehrere KI-Fehler (ein nicht
 existierender Feldname, eine Zeiger/Wert-Verwechslung in ImGui, eine falsche
 Annahme über die Chocobo-Satteltasche) wurden dabei gefunden.
 
-Das Plugin-Icon ist derzeit **KI-generiert**. Ein selbst erstelltes Icon ist geplant.
+Das Plugin-Icon ist **handgezeichnet**, nicht KI-generiert.
 
 ## Wie die Items erkannt werden
 
@@ -322,41 +369,97 @@ Stückzahl-/Bag-Spalte werden pink hervorgehoben, damit es auffällt - und die
 
 ## Teilen & Importieren (Vergleich mit Freunden / FC-Bestand)
 
-Peanuts kann Bestände zwischen Spielern austauschen. Dafür gibt es eine eigene
-**Share-Datei** (`Peanuts Share.json`) - *nicht* die CSV/Excel-Exporte: die sind
-lokalisierte, fortlaufend angehängte Berichte ohne ItemIds und als Importquelle
-unbrauchbar. Die Share-Datei identifiziert Items über die **ID**, funktioniert
-also über Client-Sprachen hinweg, und trägt den Namen des Absenders.
+Peanuts kann Bestände zwischen Spielern austauschen. Zwei typische Anwendungen:
 
-- **Eigene Daten exportieren** schreibt die Share-Datei in den Exportordner. Sie
-  enthält **nur deine eigenen Charaktere** - importierte Fremddaten werden nie
-  weitergereicht.
-- **Share-Datei importieren** liest eine Share-Datei aus demselben Ordner.
-  Importierte Charaktere sind mit ihrem Besitzer gekennzeichnet (`Name [Owner]`),
-  werden **nie gescannt und überschreiben nie deine eigenen Charaktere**. Ein
-  Charakter ist über Welt + Name eindeutig (in FFXIV kann es auf einer Welt keine
-  zwei gleichnamigen Charaktere geben), ein erneuter Import aktualisiert ihn also
-  einfach - keine Dubletten, kein Aufaddieren.
-- Kommt eine Datei von einem noch unbekannten Absender, fragt Peanuts, **wem sie
-  gehört**, und du vergibst einen Spitznamen. Jeder weitere Import desselben
-  Absenders wird automatisch unter diesem Spitznamen übernommen - auch dann, wenn
-  neue Charaktere dazugekommen sind. Ändert sich der Absender-Name (z.B. weil von
-  einem anderen Alt exportiert wurde), gleicht Peanuts die Charaktere mit den
-  bisherigen Importen ab und schlägt den passenden Spieler vor.
-- Ein **stabiler Freigabe-Name** sorgt dafür, dass ein Export von einem anderen
-  Alt beim Empfänger nicht als zweiter Spieler ankommt.
-- Importierte Spieler zählen standardmäßig **nicht** in deine Gesamtsummen - sie
-  dienen dem Vergleich. Mit **"Importierte in Gesamtsummen einbeziehen"** ergibt
-  sich ein gemeinsamer Gesamtbestand (z.B. für eine FC); die CSV/Excel-Exporte
-  folgen derselben Einstellung.
-- Importierte Spieler lassen sich sammelweise ausblenden (ein Schalter pro
-  Spieler) oder komplett entfernen, inklusive ihrer Verlaufseinträge.
-- Slots, Satteltasche und Stacks werden bewusst **nicht** übertragen; importierte
-  Charaktere zeigen dort "?".
+- **Vergleich mit Freunden** - wer hat diese Woche am meisten hochgeholt?
+- **Gemeinsamer FC-Bestand** - alle Zahlen zu einer Gesamtsumme zusammenlegen.
 
-Wo importierte Spieler sichtbar sind: der Donut **"Nach Spieler"** in der
-Gil-Verteilung, der Bereich **"Spieler"** in *Entwicklung seit der ersten
-Messung*, und die Charakterauswahl im **Verlauf**-Tab.
+### Die Share-Datei
+
+Der Austausch läuft über eine eigene **Share-Datei** (`Peanuts Share.json`),
+*nicht* über die CSV/Excel-Exporte. Die Berichte sind lokalisierte, fortlaufend
+angehängte Protokolle ohne ItemIds - als Importquelle unbrauchbar. Die
+Share-Datei dagegen:
+
+- identifiziert Items über die **ID**, funktioniert also über Client-Sprachen hinweg,
+- trägt den Namen des Absenders,
+- ist eine **Momentaufnahme**, kein Delta.
+
+Sie enthält **nur ItemIds, Qualität (NQ/HQ) und Stückzahlen**. Slots,
+Satteltasche und Stacks werden bewusst nicht übertragen; importierte Charaktere
+zeigen dort "?". Auch der Gil-Wert wird nicht übertragen, sondern bei dir neu
+berechnet - mit *deinen* Preisen, damit alle auf derselben Grundlage gemessen
+werden.
+
+### Schritt für Schritt
+
+**1. Freigabe-Namen setzen (einmalig).**
+Im Edit-Tab unter *Teilen & Importieren* einen **Freigabe-Namen** eintragen.
+Unter diesem Namen erscheinen deine Daten beim Empfänger. Halte ihn **stabil**:
+Lässt du ihn leer, wird der Name des gerade eingeloggten Charakters genommen -
+ein Export von einem anderen Alt käme beim Empfänger dann als *zweiter* Spieler an.
+
+**2. Exportieren.**
+Auf **Eigene Daten exportieren** klicken. Das schreibt `Peanuts Share.json` in
+deinen Exportordner. Die Datei enthält **nur deine eigenen Charaktere** -
+importierte Fremddaten werden nie weitergereicht. Diese Datei gibst du weiter.
+
+**3. Importieren.**
+Die Datei des anderen Spielers in deinen Exportordner legen und auf
+**Share-Datei importieren** klicken.
+
+- Kommt eine Datei von einem **neuen Absender**, fragt Peanuts, wem sie gehört,
+  und du vergibst einen **Spitznamen**. Unter diesem Namen siehst du ihn überall.
+- Jeder weitere Import desselben Absenders wird automatisch unter diesem
+  Spitznamen übernommen - auch wenn neue Charaktere dazugekommen sind.
+- Ändert sich der Absender-Name in der Datei (z.B. weil von einem anderen Alt
+  exportiert wurde), gleicht Peanuts die Charaktere mit deinen bisherigen
+  Importen ab und **schlägt den passenden Spieler vor**.
+
+**4. Unbekannte Items behandeln.**
+Enthält die Datei Items, die du selbst nicht trackst, listet Peanuts sie
+**namentlich** auf und fragt, ob du sie hinzufügen willst. Sagst du **ja**, werden
+sie mit korrekten Preisen und Stapelgröße angelegt und der Import wird
+**automatisch erneut angewendet** - du musst die Datei nicht noch einmal
+auswählen. Sagst du **nein**, werden diese Items ignoriert.
+
+> Für einen aussagekräftigen Vergleich solltet ihr **dieselben Items** tracken.
+> Trackt dein Freund fünf Items und du zwölf, ist sein Bestand nur eine Teilmenge
+> deines - er sieht ärmer aus, als er ist.
+
+### Was importierte Charaktere tun (und was nicht)
+
+- Sie sind mit ihrem Besitzer gekennzeichnet und erscheinen als `Name [Owner]`.
+- Sie werden **nie gescannt** und **überschreiben nie deine eigenen Charaktere**.
+  Enthält eine Datei einen Charakter, den du selbst besitzt, wird er übersprungen -
+  deine eigenen Live-Scans haben Vorrang.
+- Ein Charakter ist über **Welt + Name** eindeutig (in FFXIV kann es auf einer Welt
+  keine zwei gleichnamigen Charaktere geben). Ein erneuter Import desselben Spielers
+  **aktualisiert** ihn deshalb einfach - nichts wird verdoppelt, nichts doppelt
+  aufaddiert. Der *Verlauf* wächst dagegen mit: Jeder Import legt einen Messpunkt
+  mit dem **Exportzeitstempel des Absenders** an - daraus entsteht seine
+  Verlaufskurve.
+- Sie zählen standardmäßig **nicht in deine Gesamtsummen**. Mit
+  **"Importierte in Gesamtsummen einbeziehen"** ergibt sich ein gemeinsamer
+  FC-Bestand. Die CSV/Excel-Berichte folgen derselben Einstellung, damit Bericht
+  und Overlay immer dieselbe Zahl zeigen.
+
+### Importierte Spieler verwalten
+
+- **Ausblenden**: Der Schalter neben dem Spielernamen blendet alle seine
+  Charaktere auf einmal aus (die Daten bleiben erhalten). Einzelne Charaktere gehen
+  über die Charakter-Tabelle.
+- **Entfernen**: Löscht den Spieler samt seiner Verlaufseinträge. Auch seine
+  Absender-Zuordnung wird gelöst - ein erneuter Import fragt dann wieder nach einem
+  Spitznamen.
+
+### Wo du sie siehst
+
+- **Gil-Verteilung → "Nach Spieler"** - du ("Ich") gegen jeden importierten Spieler.
+- **Entwicklung seit der ersten Messung → "Spieler"** - ein Ranking mit Zuwachs und
+  Verlaufs-Sparkline je Spieler.
+- **Verlauf-Tab** - importierte Charaktere stehen in der Charakterauswahl,
+  gekennzeichnet mit `[Owner]`.
 
 ## Verkaufspreise anpassen
 
@@ -392,13 +495,8 @@ Export-Ordner lässt sich im Edit-Tab festlegen.
 - Farbliche Hervorhebung eines Werts direkt bei einer Änderung seit dem
   letzten Scan (aktuell nur eine "seit letztem Speichern/Export"-Delta-
   Zusammenfassung, keine Einzelzellen-Hervorhebung).
-- Ein Editor im UI für `Configuration.PriceOverrides`.
 - Google Sheets wird nicht direkt unterstützt; die CSV-Datei lässt sich
   manuell über Datei → Importieren laden.
-- Retainer-Inventar wird nicht gescannt - nur das Charakter-eigene Inventar
-  und die Satteltasche.
-- Item-Namen sind bisher nur für Deutsch/Englisch lokalisiert;
-  Französisch/Japanisch-Clients fallen auf Englisch zurück.
 
 ---
 

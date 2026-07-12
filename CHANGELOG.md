@@ -3,6 +3,44 @@
 All notable changes to Peanuts are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0.0] - 2026-07-12
+
+### Added
+- **Unknown items on import are now offered by name.** When a share file contains
+  items you don't track yourself, Peanuts lists them by name (in your selected
+  language) and asks whether to add them to your tracking list. Say yes and the
+  items are created with their correct NQ/HQ price and stack size - and the same
+  import is **re-applied automatically**, this time in full. No need to pick the
+  file again or re-assign the owner; both are still known.
+  Previously these entries were only reported as a count and silently skipped.
+
+## [1.3.0.1] - 2026-07-12
+
+### Changed
+- **The saddlebag column now shows its fill level, like the inventory column.**
+  A duplicate find used to paint the whole cell pink, which overwrote the
+  free-slot colour - so you could no longer see how full the saddlebag was.
+  Duplicates are still reported in chat and marked pink in the character's item
+  table, where you can also see *which* item is affected.
+- The plugin icon is now **hand-drawn**; the previous AI-generated icon is gone.
+- Documentation cleanup: trimmed the "Still open" list in the README.
+
+### Added
+- **Unknown items in an import are now offered by name.** Previously, items the
+  other player tracks but you don't were silently counted and skipped ("3 entries
+  skipped"). Now they're resolved to their actual names (in your selected
+  language) and listed in the Edit tab with a simple choice:
+  - **"Yes, add them"** - the items are added to your tracking list with the
+    correct NQ/HQ prices and stack size, and **the import is immediately
+    re-applied automatically**, this time complete. You don't need to pick the
+    file again, and the owner is already known.
+  - **"No, skip"** - the import stays as it is; those items are ignored.
+
+  This matters because a share file only carries item **IDs and quantities**, not
+  the other player's item list. If you don't track an item, its numbers have
+  nowhere to go. This dialog is how you close that gap without having to guess
+  which item was missing.
+
 ## [1.3.0.0] - 2026-07-12
 
 ### Added

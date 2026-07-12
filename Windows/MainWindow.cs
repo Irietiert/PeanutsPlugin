@@ -534,11 +534,17 @@ public class MainWindow : Window
                 : "Never scanned live yet - unknown how many inventory slots are free. Log in and scan once to capture this.");
 
         ImGui.TableNextColumn();
-        var hasDuplicate = character.HasAnyDuplicate();
         if (character.HasKnownSaddlebagSlots)
         {
-            var bagColor = hasDuplicate ? PinkText : GetSlotColor(character.FreeSaddlebagSlots, 10, 70);
-            ChartHelpers.DrawSlotBar(character.FreeSaddlebagSlots, CharacterData.MaxSaddlebagSlots, bagColor);
+            // Farbe folgt dem FÜLLSTAND - genau wie beim Inventar (grün = viel
+            // Platz, rot = fast voll). Der Doppelfund färbt diese Zelle bewusst
+            // NICHT mehr pink: er hätte die Füllstands-Information überschrieben.
+            // Doppelfunde sind weiterhin (und genauer) in der Item-Tabelle des
+            // Charakters pink markiert - dort sieht man auch, WELCHES Item betroffen ist.
+            ChartHelpers.DrawSlotBar(
+                character.FreeSaddlebagSlots,
+                CharacterData.MaxSaddlebagSlots,
+                GetSlotColor(character.FreeSaddlebagSlots, 10, 70));
         }
         else
         {
@@ -546,11 +552,11 @@ public class MainWindow : Window
         }
         Tooltip(
             character.HasKnownSaddlebagSlots
-                ? "Freie Plätze in der Chocobo-Satteltasche. Grün = leer, Rot = voll. Pink = Doppelfund erkannt (Item sowohl im Inventar als auch in der Satteltasche)."
-                : "Satteltasche noch nicht erfasst - bitte einmal am Rufglöckchen öffnen, damit Peanuts sie auslesen kann.",
+                ? "Freie Plätze in der Chocobo-Satteltasche (von 70). Grün = viel Platz, Rot = fast voll - dieselbe Skala wie beim Inventar. Doppelfunde werden in der Item-Tabelle des Charakters pink markiert."
+                : "Satteltasche noch nicht erfasst - sie muss freigeschaltet und einmal geöffnet worden sein, damit Peanuts sie auslesen kann.",
             character.HasKnownSaddlebagSlots
-                ? "Free slots in the chocobo saddlebag. Green = empty, red = full. Pink = duplicate find detected (item found both in inventory and saddlebag)."
-                : "Saddlebag not captured yet - please open it once at a summoning bell so Peanuts can read it.");
+                ? "Free slots in the chocobo saddlebag (out of 70). Green = plenty of room, red = nearly full - the same scale as the inventory. Duplicate finds are marked pink in the character's item table."
+                : "Saddlebag not captured yet - it must be unlocked and opened once before Peanuts can read it.");
 
         if (!charExpanded)
             return;
@@ -881,6 +887,7 @@ public class MainWindow : Window
             $"Reads \"{ShareFile.FileName}\" from the export folder. Put the other player's file there. Your own characters are NEVER overwritten.");
 
         DrawPendingImportDialog();
+        DrawUnknownItemsDialog();
 
         ImGui.Spacing();
 
@@ -1038,6 +1045,45 @@ public class MainWindow : Window
             plugin.CancelPendingImport();
             ownerDialogInitialized = false;
         }
+
+        ImGui.Separator();
+    }
+
+    /// <summary>
+    /// Nach einem Import: Items, die der andere Spieler trackt, du aber nicht.
+    /// Sie werden namentlich aufgelistet (in der eingestellten Sprache) und
+    /// können mit einem Klick zur eigenen Tracking-Liste hinzugefügt werden -
+    /// der Import wird danach automatisch erneut angewendet, diesmal vollständig.
+    /// </summary>
+    private void DrawUnknownItemsDialog()
+    {
+        var unknown = plugin.PendingUnknownItems;
+        if (unknown.Count == 0)
+            return;
+
+        ImGui.Spacing();
+        ImGui.Separator();
+
+        ImGui.TextColored(GoldText, Loc.Get(
+            "Unbekannte Items im Import", "Unknown items in the import"));
+        ImGui.TextDisabled(Loc.Get(
+            "Diese Items trackst du selbst nicht, deshalb wurden sie übersprungen:",
+            "You don't track these items yourself, so they were skipped:"));
+
+        foreach (var (_, name) in unknown)
+            ImGui.TextUnformatted($"  • {name}");
+
+        ImGui.Spacing();
+        ImGui.TextDisabled(Loc.Get(
+            "Zur Tracking-Liste hinzufügen? Der Import wird danach automatisch erneut angewendet.",
+            "Add them to your tracking list? The import is then re-applied automatically."));
+
+        if (ImGui.Button(Loc.Get("Ja, hinzufügen", "Yes, add them"), new Vector2(160, 0)))
+            plugin.AddMissingItemsAndReimport();
+
+        ImGui.SameLine();
+        if (ImGui.Button(Loc.Get("Nein, überspringen", "No, skip"), new Vector2(160, 0)))
+            plugin.DismissUnknownItems();
 
         ImGui.Separator();
     }

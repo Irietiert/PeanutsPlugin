@@ -115,7 +115,6 @@ public class CharacterData
         item.Variants().Any(v => IsInSaddlebag(v.CountKey));
 
     /// <summary>True, wenn mindestens eines der getrackten Items ein Doppelfund ist.</summary>
-    public bool HasAnyDuplicate() => TrackedItems.All.Any(IsDuplicateItem);
 
     /// <summary>Alle Zählungen (Hauptinventar + Satteltasche) zu einem Dictionary zusammengeführt - z.B. für History-Snapshots.</summary>
     public Dictionary<string, int> GetCombinedCounts()

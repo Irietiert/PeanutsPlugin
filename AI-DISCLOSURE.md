@@ -5,10 +5,8 @@
 > [AI Usage Policy](https://dalamud.dev/plugin-publishing/ai-policy), disclosure
 > belongs in the PR description, not in the plugin itself.
 >
-> Note: the current icon IS AI-generated and is disclosed as such below. The
-> policy explicitly prefers a hand-made icon (even a crude one), and the approval
-> team may ask you to replace it before merging. Consider replacing it *before*
-> submitting to save a review round-trip.
+> Note: the icon is hand-drawn, so no asset disclosure is needed beyond stating
+> that fact.
 
 ---
 
@@ -35,9 +33,8 @@ decisions, and built, ran and tested every change in-game before release.
 
 **I can explain any part of this plugin and why it is implemented the way it is.**
 
-**Assets:** `images/icon.png` is **AI-generated**. I'm aware the policy prefers a
-hand-made icon and I intend to replace it with my own; I'm happy to do so before
-merge if you'd like.
+**Assets:** `images/icon.png` is **hand-drawn** by me. No AI-generated assets are
+used in this plugin.
 
 **Translations:** The DE/EN strings are written by a native German speaker; the
 English strings are AI-assisted and human-reviewed.

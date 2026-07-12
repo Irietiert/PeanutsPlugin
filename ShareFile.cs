@@ -106,6 +106,10 @@ public static class ShareFile
         public int CharactersImported { get; set; }
         public int UnknownItems { get; set; }
 
+        // ItemIds aus der Datei, die lokal nicht getrackt werden. Damit kann das
+        // UI sie namentlich anbieten ("möchtest du sie hinzufügen?").
+        public List<uint> UnknownItemIds { get; set; } = new();
+
         // Charaktere aus der Datei, die bei uns bereits als EIGENE existieren -
         // die werden bewusst übersprungen, nicht überschrieben.
         public int OwnCharactersSkipped { get; set; }
@@ -221,6 +225,8 @@ public static class ShareFile
                 if (!byItemId.TryGetValue(count.ItemId, out var item))
                 {
                     result.UnknownItems++;
+                    if (!result.UnknownItemIds.Contains(count.ItemId))
+                        result.UnknownItemIds.Add(count.ItemId);
                     continue;
                 }
 
