@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game;
 using Dalamud.Interface.Windowing;
 using PeanutsPlugin.Data;
 
@@ -54,6 +56,11 @@ public class MainWindow : Window
     private int distributionChartIndex; // 0=Gesamtstand 1=Zuwachs 2=Verlauf 3=Zuwachs/Save 4=Item-Anteil 5+=Snapshots
     private int historyPeriodIndex = 3; // 0=1 Woche, 1=3 Monate, 2=6 Monate, 3=1 Jahr (Default: größter Zeitraum)
     private string characterTabSearch = string.Empty;
+    private int growthScopeIndex; // 0=Charakter, 1=Welt, 2=Datenzentrum, 3=Spieler
+    private string shareNameBuffer = string.Empty;
+    private bool shareNameBufferInitialized;
+    private string ownerNameBuffer = string.Empty;
+    private bool ownerDialogInitialized;
 
     // --- Item-Tab ---
     private string newItemSearchQuery = string.Empty;
@@ -86,6 +93,7 @@ public class MainWindow : Window
             ImGui.Separator();
             DrawGlobalSummary();
             ImGui.Spacing();
+            DrawGrowthSinceFirstSection();
             DrawGilDistributionSection();
             DrawItemCompositionSection();
             DrawHeatmapSection();
@@ -325,7 +333,7 @@ public class MainWindow : Window
         {
             foreach (var (key, _) in item.Variants())
             {
-                var itemTotal = worldList.Sum(w => w.VisibleCharacters.Sum(c => c.GetTotalCount(key)));
+                var itemTotal = worldList.Sum(w => w.CountedCharacters.Sum(c => c.GetTotalCount(key)));
                 total += StackMath.CeilDiv(itemTotal, (int)item.MaxStackSize);
             }
         }
@@ -490,8 +498,15 @@ public class MainWindow : Window
         ImGui.TableNextRow();
         ImGui.TableNextColumn();
         ImGui.Indent();
+        var charLabel = character.IsImported
+            ? $"{character.Name}  [{character.Owner}]"
+            : character.Name;
         var charExpanded = ImGui.TreeNodeEx(
-            $"{character.Name}###char_{world.Name}_{character.Name}", ImGuiTreeNodeFlags.SpanFullWidth);
+            $"{charLabel}###char_{world.Name}_{character.Name}_{character.Owner}", ImGuiTreeNodeFlags.SpanFullWidth);
+        if (character.IsImported)
+            Tooltip(
+                $"Importierter Charakter von \"{character.Owner}\" - wird nicht gescannt und nicht überschrieben.",
+                $"Imported character from \"{character.Owner}\" - not scanned and never overwritten.");
         ImGui.Unindent();
         ImGui.TableNextColumn();
         ImGui.TextColored(GoldText, $"{character.TotalGil():N0}");
@@ -523,7 +538,7 @@ public class MainWindow : Window
         if (character.HasKnownSaddlebagSlots)
         {
             var bagColor = hasDuplicate ? PinkText : GetSlotColor(character.FreeSaddlebagSlots, 10, 70);
-            ChartHelpers.DrawSlotBar(character.FreeSaddlebagSlots, character.EffectiveMaxSaddlebagSlots, bagColor);
+            ChartHelpers.DrawSlotBar(character.FreeSaddlebagSlots, CharacterData.MaxSaddlebagSlots, bagColor);
         }
         else
         {
@@ -689,7 +704,20 @@ public class MainWindow : Window
 
     /// <summary>Donut-Diagramm für den Gil-Anteil pro Welt oder Datenzentrum am Gesamtumsatz.</summary>
     /// <summary>Gruppiert Welten nach Welt oder Datenzentrum und wendet den gewünschten Wert-Selektor an (Gesamtstand oder Zuwachs).</summary>
-    private List<ChartHelpers.Segment> BuildDistributionSegments(Func<WorldData, long> valueSelector, int groupMode)
+    /// <summary>
+    /// Segmente für die Verteilungs-Donuts. groupMode: 0 = nach Welt,
+    /// 1 = nach Datenzentrum, 2 = nach Spieler.
+    ///
+    /// Wichtig: Bei "nach Spieler" werden importierte Spieler IMMER einbezogen -
+    /// diese Ansicht existiert ja gerade zum Vergleich. Die beiden anderen
+    /// Modi folgen dagegen den normalen Gesamtsummen (also dem Schalter
+    /// "Importierte in Gesamtsummen einbeziehen"), damit Donut und
+    /// "Umsatz aller Welten" nicht auseinanderlaufen.
+    /// </summary>
+    private List<ChartHelpers.Segment> BuildDistributionSegments(
+        Func<WorldData, long> valueSelector,
+        int groupMode,
+        Func<CharacterData, long>? characterValueSelector = null)
     {
         if (groupMode == 0)
         {
@@ -701,13 +729,40 @@ public class MainWindow : Window
                 .ToList();
         }
 
+        if (groupMode == 1)
+        {
+            return plugin.Configuration.Worlds.Values
+                .GroupBy(w => DataCenters.GetDataCenter(w.Name))
+                .Select(g => (Label: g.Key, Value: g.Sum(valueSelector)))
+                .Where(x => x.Value > 0)
+                .OrderByDescending(x => x.Value)
+                .Select((x, i) => new ChartHelpers.Segment(x.Label, x.Value, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
+                .ToList();
+        }
+
+        // Nach Spieler: eigene Charaktere unter "Ich", importierte je Besitzer.
+        // Der Wert wird auf CHARAKTER-Ebene bestimmt, damit auch der
+        // Zuwachs-Donut (Diagramm 2) hier korrekt rechnet und nicht einfach
+        // den Gesamtstand zeigt.
+        var charValue = characterValueSelector ?? (c => c.TotalGil());
+        var me = Loc.Get("Ich", "Me");
         return plugin.Configuration.Worlds.Values
-            .GroupBy(w => DataCenters.GetDataCenter(w.Name))
-            .Select(g => (Label: g.Key, Value: g.Sum(valueSelector)))
+            .SelectMany(w => w.VisibleCharacters)
+            .GroupBy(c => c.IsImported ? c.Owner : me)
+            .Select(g => (Label: g.Key, Value: g.Sum(charValue)))
             .Where(x => x.Value > 0)
             .OrderByDescending(x => x.Value)
             .Select((x, i) => new ChartHelpers.Segment(x.Label, x.Value, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]))
             .ToList();
+    }
+
+    /// <summary>Gil-Stand eines Charakters zum Zeitpunkt des letzten Speichern/Export-Checkpoints, aus dem Verlauf.</summary>
+    private long GetCharacterGilAtCheckpoint(CharacterData character, DateTime checkpoint)
+    {
+        return plugin.Configuration.History
+            .Where(h => h.Character == character.Name && h.Timestamp <= checkpoint)
+            .OrderByDescending(h => h.Timestamp)
+            .FirstOrDefault()?.TotalGil ?? 0;
     }
 
     /// <summary>Gil-Stand einer Welt zum Zeitpunkt des letzten Speichern/Export-Checkpoints, ermittelt aus dem Verlauf.</summary>
@@ -715,7 +770,7 @@ public class MainWindow : Window
     {
         var cfg = plugin.Configuration;
         long total = 0;
-        foreach (var character in world.VisibleCharacters)
+        foreach (var character in world.CountedCharacters)
         {
             var entry = cfg.History
                 .Where(h => h.World == world.Name && h.Character == character.Name && h.Timestamp <= checkpoint)
@@ -756,9 +811,405 @@ public class MainWindow : Window
     private List<(DateTime Time, long Gil)> BuildGilTimeline()
     {
         return plugin.Configuration.History
+            .Where(h => CharacterFilter.IncludeImportedInTotals || !h.IsImported)
             .GroupBy(h => h.Timestamp)
             .Select(g => (Time: g.Key, Gil: g.Sum(h => h.TotalGil)))
             .OrderBy(x => x.Time)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Entwicklung seit der ersten Messung - je nach gewähltem Bereich pro
+    /// Charakter, pro Welt oder pro Datenzentrum. Zeigt für jeden Eintrag den
+    /// Stand der ersten Messung, den aktuellen Stand, den Zuwachs (farbig) und
+    /// eine Sparkline des Verlaufs. Basiert auf den gespeicherten Snapshots
+    /// ("Save"-Button); der aktuelle Live-Wert wird als letzter Punkt ergänzt.
+    /// </summary>
+    /// <summary>
+    /// Teilen &amp; Importieren: eigene Bestände als Share-Datei exportieren, oder
+    /// die Share-Datei eines anderen Spielers importieren. Importierte Charaktere
+    /// werden nie gescannt oder überschrieben und zählen standardmäßig nicht in
+    /// die eigenen Gesamtsummen - sie dienen dem Vergleich (Sektion "Entwicklung
+    /// seit der ersten Messung" -> Bereich "Spieler").
+    /// </summary>
+    private void DrawShareSection()
+    {
+        var cfg = plugin.Configuration;
+
+        ImGui.TextUnformatted(Loc.Get("Teilen & Importieren", "Share & import"));
+        ImGui.TextDisabled(Loc.Get(
+            "Zum Vergleichen mit Freunden oder für einen gemeinsamen FC-Bestand.",
+            "For comparing with friends, or for a shared FC stock."));
+
+        ImGui.Spacing();
+
+        if (!shareNameBufferInitialized)
+        {
+            shareNameBuffer = cfg.ShareName;
+            shareNameBufferInitialized = true;
+        }
+
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.InputTextWithHint("##sharename",
+                Loc.Get("Freigabe-Name (leer = aktueller Charakter)", "Share name (empty = current character)"),
+                ref shareNameBuffer, 64))
+        {
+            cfg.ShareName = shareNameBuffer.Trim();
+            cfg.Save();
+        }
+        Tooltip(
+            "Unter diesem Namen erscheinen deine Daten beim Empfänger. Halte ihn STABIL - änderst du ihn, legt ein erneuter Import beim Empfänger einen zweiten Spieler an.",
+            "Your data appears under this name for the recipient. Keep it STABLE - if you change it, a re-import creates a second player on their side.");
+
+        ImGui.Spacing();
+
+        if (ImGui.Button(Loc.Get("Eigene Daten exportieren", "Export my data"), new Vector2(200, 0)))
+            plugin.ExportShareFile();
+        Tooltip(
+            $"Schreibt \"{ShareFile.FileName}\" in den Exportordner. Diese Datei kannst du weitergeben - sie enthält nur deine EIGENEN Charaktere.",
+            $"Writes \"{ShareFile.FileName}\" to the export folder. You can pass this file on - it contains only your OWN characters.");
+
+        ImGui.SameLine();
+
+        if (ImGui.Button(Loc.Get("Share-Datei importieren", "Import share file"), new Vector2(200, 0)))
+        {
+            var path = Path.Combine(plugin.GetEffectiveExportFolder(), ShareFile.FileName);
+            plugin.ImportShareFile(path);
+        }
+        Tooltip(
+            $"Liest \"{ShareFile.FileName}\" aus dem Exportordner ein. Lege die Datei des anderen Spielers dort ab. Deine eigenen Charaktere werden dabei NIE überschrieben.",
+            $"Reads \"{ShareFile.FileName}\" from the export folder. Put the other player's file there. Your own characters are NEVER overwritten.");
+
+        DrawPendingImportDialog();
+
+        ImGui.Spacing();
+
+        var includeImported = cfg.IncludeImportedInTotals;
+        if (ImGui.Checkbox(Loc.Get("Importierte in Gesamtsummen einbeziehen", "Include imported in totals"), ref includeImported))
+        {
+            cfg.IncludeImportedInTotals = includeImported;
+            cfg.Save();
+            plugin.ApplyImportSetting();
+        }
+        Tooltip(
+            "Aus (Standard): \"Umsatz aller Welten\" bleibt DEIN Bestand; importierte Spieler dienen nur dem Vergleich. An: gemeinsamer Gesamtbestand (z.B. für eine FC).",
+            "Off (default): \"Total across all worlds\" stays YOUR stock; imported players are for comparison only. On: shared overall stock (e.g. for an FC).");
+
+        var importedPlayers = ShareFile.ImportedPlayers(cfg);
+        if (importedPlayers.Count == 0)
+            return;
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted(Loc.Get("Importierte Spieler:", "Imported players:"));
+        ImGui.TextDisabled(Loc.Get(
+            "Der Schalter blendet alle Charaktere des Spielers auf einmal aus (einzeln geht es in der Charakter-Tabelle unten).",
+            "The toggle hides all of that player's characters at once (individually via the character table below)."));
+
+        foreach (var player in importedPlayers)
+        {
+            var chars = cfg.Worlds.Values.SelectMany(w => w.Characters).Where(c => c.Owner == player).ToList();
+            var anyVisible = chars.Any(c => !c.HiddenFromTool);
+
+            // Sammel-Schalter: an = alle sichtbar, aus = alle ausgeblendet.
+            if (DrawToggleSwitch($"imp_{player}", anyVisible))
+            {
+                foreach (var c in chars)
+                    c.HiddenFromTool = anyVisible; // war sichtbar -> jetzt alle aus, und umgekehrt
+                cfg.Save();
+            }
+            Tooltip(
+                $"Alle {chars.Count} Charaktere von \"{player}\" im Tool-Tab ein-/ausblenden. Die Daten bleiben erhalten.",
+                $"Show/hide all {chars.Count} characters from \"{player}\" in the Tool tab. The data is kept.");
+
+            ImGui.SameLine();
+            ImGui.TextUnformatted($"{player} ({chars.Count})");
+            ImGui.SameLine();
+
+            if (ImGui.Button(Loc.Get($"Entfernen##rm{player}", $"Remove##rm{player}")))
+                ImGui.OpenPopup($"ConfirmRemoveImport{player}");
+
+            if (ImGui.BeginPopup($"ConfirmRemoveImport{player}"))
+            {
+                ImGui.TextUnformatted(Loc.Get(
+                    $"Alle {chars.Count} importierten Charaktere von \"{player}\" entfernen?",
+                    $"Remove all {chars.Count} imported characters from \"{player}\"?"));
+                ImGui.TextDisabled(Loc.Get(
+                    "Inklusive seiner Verlaufseinträge. Deine eigenen Daten bleiben unberührt.",
+                    "Including their history entries. Your own data stays untouched."));
+
+                if (ImGui.Button(Loc.Get("Ja, entfernen", "Yes, remove")))
+                {
+                    ShareFile.RemoveImportedPlayer(cfg, player);
+                    ImGui.CloseCurrentPopup();
+                }
+                ImGui.SameLine();
+                if (ImGui.Button(Loc.Get("Abbrechen", "Cancel")))
+                    ImGui.CloseCurrentPopup();
+
+                ImGui.EndPopup();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Nachfrage nach dem Besitzer, wenn eine Share-Datei von einem noch
+    /// unbekannten Absender kommt. Du kannst einen bereits importierten Spieler
+    /// auswählen (dann wird die Datei ihm zugeordnet) oder einen neuen Spitznamen
+    /// vergeben. Die Zuordnung wird gemerkt - beim nächsten Import desselben
+    /// Absenders fragt das Tool nicht mehr nach.
+    /// </summary>
+    private void DrawPendingImportDialog()
+    {
+        var pending = plugin.PendingImport;
+        if (pending == null)
+        {
+            ownerDialogInitialized = false;
+            return;
+        }
+
+        var cfg = plugin.Configuration;
+        var existingOwners = ShareFile.ImportedPlayers(cfg);
+
+        // Beim Öffnen einmalig vorbelegen: Vorschlag aus Charakter-Abgleich,
+        // sonst der Absender-Name aus der Datei.
+        if (!ownerDialogInitialized)
+        {
+            ownerNameBuffer = plugin.PendingImportSuggestion ?? pending.Player;
+            ownerDialogInitialized = true;
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+
+        ImGui.TextColored(GoldText, Loc.Get("Neuer Absender - wem gehören diese Daten?", "New sender - who do these belong to?"));
+        ImGui.TextDisabled(Loc.Get(
+            $"Datei von \"{pending.Player}\", {pending.Characters.Count} Charakter(e), exportiert am {pending.ExportedAt:dd.MM.yyyy HH:mm}.",
+            $"File from \"{pending.Player}\", {pending.Characters.Count} character(s), exported {pending.ExportedAt:MM/dd/yyyy HH:mm}."));
+
+        if (plugin.PendingImportSuggestion != null)
+        {
+            ImGui.TextColored(GreenText, Loc.Get(
+                $"Erkannt: Charaktere aus dieser Datei gehören bereits zu \"{plugin.PendingImportSuggestion}\".",
+                $"Detected: characters in this file already belong to \"{plugin.PendingImportSuggestion}\"."));
+        }
+
+        var newChars = plugin.PendingImportNewCharacters;
+        if (newChars.Count > 0)
+        {
+            ImGui.TextDisabled(Loc.Get(
+                $"Neu dabei: {string.Join(", ", newChars)}",
+                $"New in this file: {string.Join(", ", newChars)}"));
+        }
+
+        ImGui.Spacing();
+
+        // Bereits bekannte Spieler zur Auswahl.
+        if (existingOwners.Count > 0)
+        {
+            ImGui.TextUnformatted(Loc.Get("Bestehendem Spieler zuordnen:", "Assign to existing player:"));
+            foreach (var owner in existingOwners)
+            {
+                ImGui.SameLine();
+                if (ImGui.Button($"{owner}##pick{owner}"))
+                    ownerNameBuffer = owner;
+            }
+        }
+
+        ImGui.SetNextItemWidth(220);
+        ImGui.InputTextWithHint("##ownername",
+            Loc.Get("Spitzname des Spielers", "Player's nickname"), ref ownerNameBuffer, 64);
+
+        var canConfirm = !string.IsNullOrWhiteSpace(ownerNameBuffer);
+        if (!canConfirm)
+            ImGui.BeginDisabled();
+
+        if (ImGui.Button(Loc.Get("Importieren", "Import"), new Vector2(140, 0)))
+        {
+            plugin.ConfirmPendingImport(ownerNameBuffer);
+            ownerDialogInitialized = false;
+        }
+
+        if (!canConfirm)
+            ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        if (ImGui.Button(Loc.Get("Abbrechen", "Cancel"), new Vector2(140, 0)))
+        {
+            plugin.CancelPendingImport();
+            ownerDialogInitialized = false;
+        }
+
+        ImGui.Separator();
+    }
+
+    private void DrawGrowthSinceFirstSection()
+    {
+        if (!ImGui.CollapsingHeader(Loc.Get("📈 Entwicklung seit der ersten Messung", "📈 Growth since first measurement")))
+            return;
+
+        var cfg = plugin.Configuration;
+
+        if (cfg.History.Count == 0)
+        {
+            ImGui.TextDisabled(Loc.Get(
+                "Noch keine Messung gespeichert - einmal auf \"Save\" klicken.",
+                "No measurement saved yet - click \"Save\" once."));
+            return;
+        }
+
+        ImGui.RadioButton(Loc.Get("Charakter", "Character"), ref growthScopeIndex, 0);
+        ImGui.SameLine();
+        ImGui.RadioButton(Loc.Get("Welt", "World"), ref growthScopeIndex, 1);
+        ImGui.SameLine();
+        ImGui.RadioButton(Loc.Get("Datenzentrum", "Data center"), ref growthScopeIndex, 2);
+        ImGui.SameLine();
+        ImGui.RadioButton(Loc.Get("Spieler", "Player"), ref growthScopeIndex, 3);
+        Tooltip(
+            "Bereich der Auswertung: einzelne Charaktere, zu Welten oder Datenzentren zusammengefasst, oder je Spieler (du selbst und importierte Spieler).",
+            "Scope of the breakdown: individual characters, grouped into worlds or data centers, or per player (yourself and imported players).");
+
+        ImGui.Spacing();
+
+        var rows = BuildGrowthRows(growthScopeIndex);
+        if (rows.Count == 0)
+        {
+            ImGui.TextDisabled(Loc.Get("Keine Daten für diese Auswertung.", "No data for this breakdown."));
+            return;
+        }
+
+        if (!ImGui.BeginTable("##growthtable", 5,
+                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
+            return;
+
+        ImGui.TableSetupColumn(Loc.Get("Name", "Name"));
+        ImGui.TableSetupColumn(Loc.Get("Erste Messung", "First measurement"));
+        ImGui.TableSetupColumn(Loc.Get("Aktuell", "Current"));
+        ImGui.TableSetupColumn(Loc.Get("Zuwachs", "Growth"));
+        ImGui.TableSetupColumn(Loc.Get("Verlauf", "Trend"));
+        ImGui.TableHeadersRow();
+
+        foreach (var row in rows)
+        {
+            ImGui.TableNextRow();
+
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(row.Name);
+            Tooltip(
+                $"Erste Messung am {row.FirstTime:dd.MM.yyyy HH:mm} ({row.PointCount} Messpunkte).",
+                $"First measured on {row.FirstTime:MM/dd/yyyy HH:mm} ({row.PointCount} data points).");
+
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted($"{row.FirstGil:N0}");
+
+            ImGui.TableNextColumn();
+            ImGui.TextColored(GoldText, $"{row.CurrentGil:N0}");
+
+            ImGui.TableNextColumn();
+            var growth = row.CurrentGil - row.FirstGil;
+            var sign = growth >= 0 ? "+" : "";
+            ImGui.TextColored(growth >= 0 ? GreenText : RedText, $"{sign}{growth:N0}");
+
+            ImGui.TableNextColumn();
+            if (row.Trend.Length >= 2)
+            {
+                var min = row.Trend.Min();
+                var max = row.Trend.Max();
+                float sMin = min, sMax = max;
+                if (sMax - sMin < 0.0001f)
+                {
+                    var pad = Math.Abs(max) < 0.0001f ? 1f : Math.Abs(max) * 0.05f;
+                    sMin = min - pad;
+                    sMax = max + pad;
+                }
+
+                ImGui.PlotLines($"##growthtrend{row.Name}", row.Trend, row.Trend.Length, "", sMin, sMax,
+                    new Vector2(120f, 24f), sizeof(float));
+            }
+            else
+            {
+                ImGui.TextDisabled(Loc.Get("zu wenig Daten", "not enough data"));
+            }
+        }
+
+        ImGui.EndTable();
+    }
+
+    /// <summary>
+    /// Baut die Zeilen für <see cref="DrawGrowthSinceFirstSection"/>: gruppiert
+    /// die Verlaufs-Snapshots nach Charakter (0), Welt (1) oder Datenzentrum (2),
+    /// bildet je Gruppe die Zeitreihe und hängt den aktuellen Live-Wert an.
+    /// Sortiert nach Zuwachs, absteigend.
+    /// </summary>
+    private List<(string Name, long FirstGil, long CurrentGil, DateTime FirstTime, int PointCount, float[] Trend)> BuildGrowthRows(int scope)
+    {
+        var cfg = plugin.Configuration;
+        var me = Loc.Get("Ich", "Me");
+
+        // Diese Sektion ist die VERGLEICHS-Ansicht: importierte Spieler werden
+        // hier bewusst immer mit aufgeführt, unabhängig vom "In Gesamtsummen
+        // einbeziehen"-Schalter (der steuert nur die eigenen Summen oben).
+        var currentByKey = new Dictionary<string, long>();
+        foreach (var world in cfg.Worlds.Values)
+        {
+            foreach (var character in world.VisibleCharacters)
+            {
+                var owner = character.IsImported ? character.Owner : me;
+                var key = scope switch
+                {
+                    0 => character.IsImported
+                        ? $"{character.Name} ({world.Name}) [{character.Owner}]"
+                        : $"{character.Name} ({world.Name})",
+                    1 => world.Name,
+                    2 => DataCenters.GetDataCenter(world.Name),
+                    _ => owner,
+                };
+                currentByKey.TryGetValue(key, out var cur);
+                currentByKey[key] = cur + character.TotalGil();
+            }
+        }
+
+        var seriesByKey = new Dictionary<string, SortedDictionary<DateTime, long>>();
+        foreach (var entry in cfg.History)
+        {
+            var owner = entry.IsImported ? entry.Owner : me;
+            var key = scope switch
+            {
+                0 => entry.IsImported
+                    ? $"{entry.Character} ({entry.World}) [{entry.Owner}]"
+                    : $"{entry.Character} ({entry.World})",
+                1 => entry.World,
+                2 => DataCenters.GetDataCenter(entry.World),
+                _ => owner,
+            };
+
+            if (!seriesByKey.TryGetValue(key, out var series))
+            {
+                series = new SortedDictionary<DateTime, long>();
+                seriesByKey[key] = series;
+            }
+
+            series.TryGetValue(entry.Timestamp, out var sum);
+            series[entry.Timestamp] = sum + entry.TotalGil;
+        }
+
+        var rows = new List<(string, long, long, DateTime, int, float[])>();
+        foreach (var (key, series) in seriesByKey)
+        {
+            if (series.Count == 0)
+                continue;
+
+            var firstTime = series.Keys.First();
+            var firstGil = series[firstTime];
+            var current = currentByKey.GetValueOrDefault(key);
+
+            // Zeitreihe = alle Snapshots + aktueller Live-Wert als letzter Punkt.
+            var trend = series.Values.Select(v => (float)v).Append((float)current).ToArray();
+
+            rows.Add((key, firstGil, current, firstTime, series.Count, trend));
+        }
+
+        return rows
+            .OrderByDescending(r => r.Item3 - r.Item2)
             .ToList();
     }
 
@@ -772,6 +1223,11 @@ public class MainWindow : Window
         ImGui.RadioButton(Loc.Get("Nach Welt", "By World"), ref distributionGroupMode, 0);
         ImGui.SameLine();
         ImGui.RadioButton(Loc.Get("Nach Datenzentrum", "By Data Center"), ref distributionGroupMode, 1);
+        ImGui.SameLine();
+        ImGui.RadioButton(Loc.Get("Nach Spieler", "By Player"), ref distributionGroupMode, 2);
+        Tooltip(
+            "\"Nach Spieler\" stellt dich (\"Ich\") den importierten Spielern gegenüber - importierte werden hier immer einbezogen, unabhängig vom Gesamtsummen-Schalter.",
+            "\"By Player\" compares you (\"Me\") against imported players - imported ones are always included here, regardless of the totals toggle.");
         ImGui.Spacing();
 
         // Bis zu 4 datierte, vergangene Snapshots (neueste zuerst).
@@ -826,7 +1282,9 @@ public class MainWindow : Window
                 return;
             }
 
-            ChartHelpers.DrawDonutChart(totalSegments, 90f, $"{cfg.GlobalTotalGil():N0}\nGil");
+            // Mitte = Summe der tatsächlich gezeigten Segmente. Im Spieler-Modus
+            // sind das auch die importierten, dort passt GlobalTotalGil() nicht.
+            ChartHelpers.DrawDonutChart(totalSegments, 90f, $"{(long)totalSegments.Sum(s => s.Value):N0}\nGil");
             return;
         }
 
@@ -841,7 +1299,9 @@ public class MainWindow : Window
 
             var checkpoint = cfg.LastCheckpointTimestamp.Value;
             var growthSegments = BuildDistributionSegments(
-                w => Math.Max(0, w.TotalGil() - GetWorldGilAtCheckpoint(w, checkpoint)), distributionGroupMode);
+                w => Math.Max(0, w.TotalGil() - GetWorldGilAtCheckpoint(w, checkpoint)),
+                distributionGroupMode,
+                c => Math.Max(0, c.TotalGil() - GetCharacterGilAtCheckpoint(c, checkpoint)));
 
             if (growthSegments.Count == 0)
             {
@@ -922,7 +1382,7 @@ public class MainWindow : Window
                     foreach (var (key, price) in item.Variants())
                     {
                         var qty = plugin.Configuration.Worlds.Values
-                            .Sum(w => w.VisibleCharacters.Sum(c => c.GetTotalCount(key)));
+                            .Sum(w => w.CountedCharacters.Sum(c => c.GetTotalCount(key)));
                         gil += (long)qty * price;
                     }
                     return (item.Name, Gil: gil);
@@ -984,7 +1444,7 @@ public class MainWindow : Window
                     long gil = 0;
                     foreach (var (key, price) in item.Variants())
                     {
-                        var qty = world.VisibleCharacters.Sum(c => c.GetTotalCount(key));
+                        var qty = world.CountedCharacters.Sum(c => c.GetTotalCount(key));
                         gil += (long)qty * price;
                     }
                     return new ChartHelpers.Segment(item.Name, gil, ChartHelpers.Palette[i % ChartHelpers.Palette.Length]);
@@ -1114,6 +1574,12 @@ public class MainWindow : Window
         ImGui.TextDisabled(Loc.Get(
             "Aus: Das Tool bleibt nach dem Login gestoppt, bis du auf \"Start\" klickst.",
             "Off: the tool stays stopped after login until you click \"Start\"."));
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        DrawShareSection();
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -1322,6 +1788,14 @@ public class MainWindow : Window
                     ImGui.TextUnformatted(world.Name);
                     ImGui.TableNextColumn();
                     ImGui.TextUnformatted(character.Name);
+                    if (character.IsImported)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextDisabled($"[{character.Owner}]");
+                        Tooltip(
+                            $"Importierter Charakter von \"{character.Owner}\" - wird nicht gescannt. Die Schalter rechts blenden ihn wie jeden anderen Charakter aus.",
+                            $"Imported character from \"{character.Owner}\" - not scanned. The toggles on the right hide it like any other character.");
+                    }
                     ImGui.TableNextColumn();
                     ImGui.TextUnformatted(character.LastScannedAt?.ToString("dd.MM.yyyy") ?? Loc.Get("nie", "never"));
 
@@ -1548,6 +2022,18 @@ public class MainWindow : Window
         }
     }
 
+    /// <summary>Charakter-Beschriftung im Verlauf-Tab: importierte Charaktere mit [Spielername].</summary>
+    private string HistoryCharacterLabel(string? world, string? characterName)
+    {
+        if (world == null || characterName == null)
+            return string.Empty;
+
+        var character = plugin.Configuration.FindCharacter(world, characterName);
+        return character is { IsImported: true }
+            ? $"{characterName}  [{character.Owner}]"
+            : characterName;
+    }
+
     private void DrawHistoryTab()
     {
         var cfg = plugin.Configuration;
@@ -1615,16 +2101,19 @@ public class MainWindow : Window
             selectedHistoryCharacter = characters.First();
 
         ImGui.SetNextItemWidth(220);
-        if (ImGui.BeginCombo(Loc.Get("Charakter", "Character"), selectedHistoryCharacter))
+        if (ImGui.BeginCombo(Loc.Get("Charakter", "Character"), HistoryCharacterLabel(selectedHistoryWorld, selectedHistoryCharacter)))
         {
             foreach (var character in characters)
             {
-                if (ImGui.Selectable(character, character == selectedHistoryCharacter))
+                if (ImGui.Selectable(HistoryCharacterLabel(selectedHistoryWorld, character), character == selectedHistoryCharacter))
                     selectedHistoryCharacter = character;
             }
 
             ImGui.EndCombo();
         }
+        Tooltip(
+            "Importierte Charaktere anderer Spieler sind mit [Spielername] gekennzeichnet und stehen hier genauso zur Auswahl wie die eigenen.",
+            "Imported characters from other players are marked with [player name] and can be selected here just like your own.");
 
         // Bei mehreren Messungen am selben Tag reicht eine Anzeige pro Tag -
         // es wird jeweils die letzte (aktuellste) Messung des Tages genommen.
@@ -1877,7 +2366,7 @@ public class MainWindow : Window
         ImGui.TextUnformatted(Loc.Get("Neues Item hinzufügen", "Add new item"));
         ImGui.SetNextItemWidth(300);
         ImGui.InputTextWithHint("##itemsearch",
-            Loc.Get("Item-Name suchen...", "Search item name..."), ref newItemSearchQuery, 100);
+            Loc.Get("Item-Name suchen (deutsch oder englisch)...", "Search item name (German or English)..."), ref newItemSearchQuery, 100);
 
         var trimmedQuery = newItemSearchQuery.Trim();
         if (trimmedQuery != lastSearchedItemQuery)
@@ -1889,10 +2378,17 @@ public class MainWindow : Window
 
         if (itemSearchResults.Count > 0)
         {
+            // Trefferanzeige folgt der eingestellten Overlay-Sprache (wie
+            // ItemDefinition.Name): auf Englisch der englische Name, sonst der
+            // deutsche. Gesucht wird weiterhin in BEIDEN Sprachen - nur die
+            // Darstellung richtet sich nach der Einstellung des Nutzers.
+            static string DisplayName((uint ItemId, string NameDe, string? NameEn, bool CanBeHq, uint PriceNq, uint PriceHq, uint StackSize) r) =>
+                Loc.CurrentLanguage == ClientLanguage.German ? r.NameDe : (r.NameEn ?? r.NameDe);
+
             ImGui.SetNextItemWidth(340);
             var selectedLabel = itemSearchResults
                 .Where(r => r.ItemId == selectedNewItemId)
-                .Select(r => r.NameDe)
+                .Select(DisplayName)
                 .FirstOrDefault() ?? Loc.Get("Treffer wählen...", "Select a match...");
 
             if (ImGui.BeginCombo("##itemsearchresults", selectedLabel))
@@ -1903,9 +2399,10 @@ public class MainWindow : Window
                     var priceLabel = result.CanBeHq
                         ? $"{result.PriceNq:N0} / {result.PriceHq:N0} Gil"
                         : $"{result.PriceNq:N0} Gil";
+                    var displayName = DisplayName(result);
                     var label = alreadyInList
-                        ? $"{result.NameDe} ({priceLabel}) - {Loc.Get("bereits hinzugefügt", "already added")}"
-                        : $"{result.NameDe} ({priceLabel})";
+                        ? $"{displayName} ({priceLabel}) - {Loc.Get("bereits hinzugefügt", "already added")}"
+                        : $"{displayName} ({priceLabel})";
 
                     if (alreadyInList)
                     {

@@ -13,13 +13,11 @@ public class ScanResult
     public int UsedInventorySlots { get; set; }
     public int UsedSaddlebagSlots { get; set; } = -1;
 
-    // True, wenn die Satteltasche beim Scan tatsächlich geladen war (vor dem
-    // ersten Öffnen am Rufglöckchen ist sie es oft nicht). Nur dann sind
-    // Satteltaschen-Zählung/-Slots/-Kapazität aussagekräftig.
+    // True, wenn die Satteltasche beim Scan tatsächlich GELADEN war. Sie ist
+    // erst dann geladen, wenn sie im Spiel freigeschaltet (später in der MSQ)
+    // UND in dieser Session mindestens einmal am Rufglöckchen geöffnet wurde.
+    // Nur dann sind Satteltaschen-Zählung/-Slots aussagekräftig; sonst "?".
     public bool SaddlebagLoaded { get; set; }
-
-    // Beobachtete Gesamtkapazität der Satteltasche (35 oder 70), -1 = unbekannt.
-    public int SaddlebagCapacity { get; set; } = -1;
 }
 
 /// <summary>
@@ -100,24 +98,24 @@ public unsafe class InventoryScanner
 
         result.UsedInventorySlots = CountUsedSlots(inventoryManager, BagsToScan);
 
-        // Satteltasche: Kapazität und Ladezustand bestimmen. Vor dem ersten
-        // Öffnen der Satteltasche sind ihre Container oft null - dann gilt sie
-        // als "nicht geladen" und die belegten Plätze bleiben unbekannt (-1),
-        // statt fälschlich 0 (= scheinbar leer) zu melden.
-        var saddlebagCapacity = 0;
+        // Satteltasche: NUR als geladen behandeln, wenn das Loaded-Flag des
+        // Containers gesetzt ist. Das ist erst der Fall, wenn die Satteltasche
+        // freigeschaltet und einmal geöffnet wurde. Wichtig: die reine
+        // Container-GRÖSSE (Size) ist KEIN Ladezustand - sie ist auch bei einer
+        // noch nicht freigeschalteten Satteltasche gesetzt und würde diese
+        // fälschlich als "vorhanden und leer" anzeigen.
         var saddlebagLoaded = false;
         foreach (var bag in SaddlebagsToScan)
         {
             var container = inventoryManager->GetInventoryContainer(bag);
-            if (container != null && container->Size > 0)
+            if (container != null && container->IsLoaded)
             {
-                saddlebagCapacity += container->Size;
                 saddlebagLoaded = true;
+                break;
             }
         }
 
         result.SaddlebagLoaded = saddlebagLoaded;
-        result.SaddlebagCapacity = saddlebagLoaded ? saddlebagCapacity : -1;
         result.UsedSaddlebagSlots = saddlebagLoaded
             ? CountUsedSlots(inventoryManager, SaddlebagsToScan)
             : -1;

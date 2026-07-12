@@ -68,6 +68,24 @@ public class Configuration : IPluginConfiguration
     // nach dem Login gestoppt, bis der Nutzer manuell auf "Start" klickt.
     public bool AutoStartOnLogin { get; set; } = true;
 
+    // Zählen importierte Charaktere anderer Spieler in die Gesamtsummen mit?
+    // Standard false: "Umsatz aller Welten" bleibt der EIGENE Bestand, fremde
+    // Charaktere dienen nur dem Vergleich. Auf true gesetzt ergibt sich ein
+    // gemeinsamer Gesamtbestand (z.B. für eine FC).
+    public bool IncludeImportedInTotals { get; set; }
+
+    // Name, unter dem die eigenen Daten in der Share-Datei erscheinen (der
+    // "Owner" beim Empfänger). MUSS stabil bleiben, sonst legt ein erneuter
+    // Export von einem anderen Alt beim Empfänger einen zweiten "Spieler" an.
+    // Leer = es wird der Name des aktuell eingeloggten Charakters genutzt.
+    public string ShareName { get; set; } = string.Empty;
+
+    // Zuordnung: Absender-Name AUS DER SHARE-DATEI -> von dir vergebener
+    // Spitzname. Dadurch wird derselbe Absender beim nächsten Import
+    // automatisch wiedererkannt und ohne Nachfrage übernommen - auch dann,
+    // wenn neue Charaktere dazugekommen sind.
+    public Dictionary<string, string> ShareOwnerAliases { get; set; } = new();
+
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
 
@@ -109,21 +127,56 @@ public class Configuration : IPluginConfiguration
     }
 
     /// <summary>
-    /// Findet den Charakter in der angegebenen Welt, oder legt ihn neu an,
-    /// solange das 8-Charaktere-Limit der Welt nicht erreicht ist.
+    /// Findet den EIGENEN Charakter in der angegebenen Welt, oder legt ihn neu
+    /// an, solange das 8-Charaktere-Limit der Welt nicht erreicht ist. Das Limit
+    /// zählt bewusst nur eigene Charaktere - importierte Charaktere anderer
+    /// Spieler (Owner gesetzt) sind davon ausgenommen, sonst würde ein Import
+    /// verhindern, dass eigene Charaktere noch angelegt werden können.
     /// </summary>
     public CharacterData? GetOrCreateCharacter(string worldName, string characterName)
     {
         var world = GetOrCreateWorld(worldName);
 
-        var existing = world.Characters.Find(c => c.Name == characterName);
+        // Nur eigene Charaktere: ein gleichnamiger IMPORTIERTER Charakter darf
+        // hier niemals zurückgegeben (und damit vom Scanner überschrieben) werden.
+        var existing = world.Characters.Find(c => c.Name == characterName && !c.IsImported);
         if (existing != null)
             return existing;
 
-        if (world.Characters.Count >= MaxCharactersPerWorld)
+        if (world.Characters.Count(c => !c.IsImported) >= MaxCharactersPerWorld)
             return null; // Limit erreicht - Aufrufer muss das im UI anzeigen
 
         var newChar = new CharacterData { Name = characterName };
+        world.Characters.Add(newChar);
+        return newChar;
+    }
+
+    /// <summary>
+    /// Legt einen importierten Charakter an bzw. aktualisiert ihn. Ein Charakter
+    /// ist durch Welt + Name EINDEUTIG identifiziert (in FFXIV kann es auf einer
+    /// Welt keine zwei gleichnamigen Charaktere geben), der Owner ist deshalb nur
+    /// ein Attribut und kein Teil des Schlüssels. Schickt dir jemand einen
+    /// Charakter, den du schon von einem anderen Absender hast, wird er
+    /// umgehängt statt doppelt angelegt. Unterliegt NICHT dem 8-Charaktere-Limit
+    /// (das gilt nur für eigene Charaktere).
+    /// </summary>
+    public CharacterData? GetOrCreateImportedCharacter(string worldName, string characterName, string owner)
+    {
+        var world = GetOrCreateWorld(worldName);
+
+        var existing = world.Characters.Find(c => c.Name == characterName);
+        if (existing != null)
+        {
+            // Eigene Charaktere werden NIE von einem Import überschrieben -
+            // deine Live-Scans sind immer die verlässlichere Quelle.
+            if (!existing.IsImported)
+                return null;
+
+            existing.Owner = owner;
+            return existing;
+        }
+
+        var newChar = new CharacterData { Name = characterName, Owner = owner };
         world.Characters.Add(newChar);
         return newChar;
     }
@@ -144,14 +197,14 @@ public class Configuration : IPluginConfiguration
         {
             foreach (var (key, _) in item.Variants())
             {
-                var itemTotal = Worlds.Values.Sum(w => w.VisibleCharacters.Sum(c => c.GetTotalCount(key)));
+                var itemTotal = Worlds.Values.Sum(w => w.CountedCharacters.Sum(c => c.GetTotalCount(key)));
                 total += StackMath.CeilDiv(itemTotal, (int)item.MaxStackSize);
             }
         }
         return total;
     }
 
-    public int GlobalCharacterCount() => Worlds.Values.Sum(w => w.VisibleCharacters.Count());
+    public int GlobalCharacterCount() => Worlds.Values.Sum(w => w.CountedCharacters.Count());
 
     /// <summary>Findet einen Charakter anhand von Welt+Name, oder null falls nicht vorhanden.</summary>
     public CharacterData? FindCharacter(string worldName, string characterName) =>

@@ -56,11 +56,11 @@ public static class ExcelExporter
 
         foreach (var world in config.Worlds.Values)
         {
-            foreach (var character in world.Characters.Where(c => !c.HiddenFromExport && !c.IsArchived))
+            foreach (var character in world.Characters.Where(c => c.IsExportable))
             {
                 col = 1;
                 sheet.Cell(row, col++).Value = world.Name;
-                sheet.Cell(row, col++).Value = character.Name;
+                sheet.Cell(row, col++).Value = character.ExportName;
 
                 foreach (var item in TrackedItems.All)
                 {

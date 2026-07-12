@@ -12,6 +12,13 @@ public class HistoryEntry
     public DateTime Timestamp { get; set; }
     public string World { get; set; } = string.Empty;
     public string Character { get; set; } = string.Empty;
+
+    // Besitzer zum Zeitpunkt des Snapshots. Leer = eigener Charakter.
+    // Nicht leer = importierter Charakter eines anderen Spielers; solche
+    // Einträge dürfen die eigenen Gesamt-/Verlaufsauswertungen nicht verfälschen.
+    public string Owner { get; set; } = string.Empty;
+
+    public bool IsImported => !string.IsNullOrEmpty(Owner);
     public Dictionary<string, int> ItemCounts { get; set; } = new();
     public long TotalGil { get; set; }
     public bool IsReset { get; set; }

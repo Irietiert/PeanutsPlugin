@@ -3,6 +3,70 @@
 All notable changes to Peanuts are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0.0] - 2026-07-12
+
+### Added
+- **Growth since first measurement** section under the Gil total: per-entry first
+  value, current value, growth (color-coded) and a trend sparkline. Switchable
+  between **Character / World / Data center / Player**.
+- **Gil distribution: "By Player"** as a third grouping (next to World and Data
+  Center) - compares you ("Me") against imported players. Imported players are
+  always included in this view, regardless of the totals toggle.
+- **Share & import** (Edit tab): export your own stock as `Peanuts Share.json`
+  and import another player's file. Built for comparing with friends and for
+  tracking a shared FC stock.
+  - Imported characters are tagged with their owner, are **never scanned and
+    never overwrite your own characters**, and are excluded from your totals by
+    default (toggle "Include imported in totals" to get a combined stock).
+  - A character is identified by **world + name** (unique in FFXIV), so a
+    re-import updates in place - it never duplicates or accumulates.
+  - A **stable share name** can be set, so exporting from a different alt doesn't
+    show up as a second player on the recipient's side.
+  - Importing is itself a measurement: it lands in the history with the *sender's*
+    export timestamp, so imported players appear in the revenue history right away.
+  - Imported players can be hidden in bulk (one toggle per player) or removed
+    entirely, including their history entries.
+  - Slots, bag and stack data are deliberately **not** transferred - imported
+    characters show "?" there.
+- Item search now matches **German and English** names; results are shown in the
+  language selected in the Edit tab.
+
+### Fixed
+- **CSV/Excel exports could include imported characters** while the overlay's
+  totals excluded them, so report and display showed different numbers. Both now
+  follow the same rule; when included, imported characters are marked
+  `Name [Owner]`. The share file never contains other players' data at all.
+
+### Note
+The CSV/Excel exports are localized, append-only reports without item IDs - they
+are deliberately **not** used as an import source. The share file is a dedicated,
+language-neutral snapshot format (items identified by ID).
+
+## [1.2.0.2] - 2026-07-12
+
+### Fixed
+- **Characters without a saddlebag kept showing a stale "70/70".** Two issues:
+  the not-loaded case preserved the previously stored (wrong) values instead of
+  marking them unknown, and characters that aren't currently logged in never got
+  rescanned. The saddlebag is now marked unknown ("?") whenever it isn't loaded,
+  and a one-time config migration clears the bad values written by earlier
+  versions. Gil totals, item counts and history are untouched.
+
+### Changed
+- Item search now matches **German and English** item names, and the result list
+  is shown in the language selected in the Edit tab.
+
+## [1.2.0.1] - 2026-07-12
+
+### Fixed
+- **The saddlebag was shown for every character, always appearing empty.**
+  Availability was detected via the container's `Size`, which is also set for a
+  saddlebag that hasn't been unlocked yet (it unlocks later in the MSQ) - so it
+  showed up as "70/70 free" instead of unknown. It's now detected via the
+  container's `Loaded` flag, and characters without an unlocked (or not yet
+  opened) saddlebag correctly show "?" again. Saddlebag capacity is a fixed 70
+  slots.
+
 ## [1.2.0.0] - 2026-07-10
 
 ### Added

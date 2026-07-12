@@ -53,7 +53,7 @@ public static class CsvExporter
 
         foreach (var world in config.Worlds.Values)
         {
-            var exportableCharacters = world.Characters.Where(c => !c.HiddenFromExport && !c.IsArchived).ToList();
+            var exportableCharacters = world.Characters.Where(c => c.IsExportable).ToList();
 
             foreach (var character in exportableCharacters)
             {
@@ -64,11 +64,11 @@ public static class CsvExporter
                         var quality = key == item.Key ? "NQ" : "HQ";
                         var qty = character.GetTotalCount(key);
                         var gil = (long)qty * price;
-                        sb.AppendLine($"{Escape(world.Name)};{Escape(character.Name)};{Escape(item.Name)};{quality};{qty};{price};{gil}");
+                        sb.AppendLine($"{Escape(world.Name)};{Escape(character.ExportName)};{Escape(item.Name)};{quality};{qty};{price};{gil}");
                     }
                 }
 
-                sb.AppendLine($"{Escape(world.Name)};{Escape(character.Name)};{totalLabel};;{character.TotalQuantity()};;{character.TotalGil()}");
+                sb.AppendLine($"{Escape(world.Name)};{Escape(character.ExportName)};{totalLabel};;{character.TotalQuantity()};;{character.TotalGil()}");
             }
 
             var worldQty = exportableCharacters.Sum(c => c.TotalQuantity());
@@ -76,7 +76,7 @@ public static class CsvExporter
             sb.AppendLine($"{Escape(world.Name)};{totalLabel};;;{worldQty};;{worldGil}");
         }
 
-        var allExportable = config.Worlds.Values.SelectMany(w => w.Characters.Where(c => !c.HiddenFromExport && !c.IsArchived)).ToList();
+        var allExportable = config.Worlds.Values.SelectMany(w => w.Characters.Where(c => c.IsExportable)).ToList();
         sb.AppendLine($"{allWorldsLabel};{totalLabel};;;{allExportable.Sum(c => c.TotalQuantity())};;{allExportable.Sum(c => c.TotalGil())}");
 
         if (isNewFile)

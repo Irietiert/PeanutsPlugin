@@ -4,9 +4,41 @@ using System.Linq;
 
 namespace PeanutsPlugin.Data;
 
+/// <summary>
+/// Globaler Anzeige-Schalter (wie Loc.CurrentLanguage): steuert, ob importierte
+/// Charaktere anderer Spieler in die Gesamtsummen einfließen. Wird beim Start
+/// und bei Änderung im Edit-Tab aus der Konfiguration gesetzt.
+/// </summary>
+public static class CharacterFilter
+{
+    public static bool IncludeImportedInTotals { get; set; }
+}
+
 public class CharacterData
 {
     public string Name { get; set; } = string.Empty;
+
+    // Besitzer des Charakters. Leer = eigener Charakter (Standard, wird live
+    // gescannt). Nicht leer = über eine Share-Datei importierter Charakter
+    // eines anderen Spielers; solche Charaktere werden NIE gescannt oder
+    // überschrieben und zählen standardmäßig nicht in die eigenen Summen.
+    public string Owner { get; set; } = string.Empty;
+
+    /// <summary>True, wenn dieser Charakter von einem anderen Spieler importiert wurde.</summary>
+    public bool IsImported => !string.IsNullOrEmpty(Owner);
+
+    /// <summary>
+    /// Geht dieser Charakter in CSV/Excel-Berichte ein? Importierte Charaktere
+    /// anderer Spieler nur dann, wenn sie auch in den Gesamtsummen mitzählen -
+    /// sonst würde der Bericht andere Zahlen liefern als das Overlay.
+    /// </summary>
+    public bool IsExportable =>
+        !HiddenFromExport
+        && !IsArchived
+        && (CharacterFilter.IncludeImportedInTotals || !IsImported);
+
+    /// <summary>Anzeigename für Berichte: importierte Charaktere mit Besitzer gekennzeichnet.</summary>
+    public string ExportName => IsImported ? $"{Name} [{Owner}]" : Name;
 
     // Key = ItemDefinition.Key ("Ring", ...) für NQ, ItemDefinition.HqKey ("Ring:HQ") für HQ.
     // ItemCounts = Hauptinventar (Bag 1-4), SaddlebagCounts = Chocobo-Satteltasche.
@@ -28,11 +60,6 @@ public class CharacterData
 
     // Belegte Plätze in der Chocobo-Satteltasche, live erfasst beim Scan. -1 = unbekannt.
     public int UsedSaddlebagSlots { get; set; } = -1;
-
-    // Beim letzten Scan beobachtete Gesamtkapazität der Satteltasche (35 oder
-    // 70, je nach freigeschalteter zweiter Seite). -1 = noch nie erfasst; dann
-    // wird für die Anzeige auf den Standard (MaxSaddlebagSlots) zurückgegriffen.
-    public int SaddlebagCapacity { get; set; } = -1;
 
     // Zeitpunkt der letzten tatsächlichen Erfassung (jeder Scan-Tick, nicht
     // nur bei Vollständigkeit) - für die "Zuletzt gescannt"-Spalte im
@@ -61,11 +88,8 @@ public class CharacterData
 
     public bool HasKnownSaddlebagSlots => UsedSaddlebagSlots >= 0;
 
-    /// <summary>Tatsächliche Satteltaschen-Kapazität, falls beobachtet, sonst der Standardwert.</summary>
-    public int EffectiveMaxSaddlebagSlots => SaddlebagCapacity > 0 ? SaddlebagCapacity : MaxSaddlebagSlots;
-
-    /// <summary>Freie Satteltaschenplätze. -1, solange unbekannt.</summary>
-    public int FreeSaddlebagSlots => HasKnownSaddlebagSlots ? EffectiveMaxSaddlebagSlots - UsedSaddlebagSlots : -1;
+    /// <summary>Freie Satteltaschenplätze (von immer 70). -1, solange unbekannt/nicht freigeschaltet.</summary>
+    public int FreeSaddlebagSlots => HasKnownSaddlebagSlots ? MaxSaddlebagSlots - UsedSaddlebagSlots : -1;
 
     /// <summary>Kombinierte Stückzahl (Hauptinventar + Satteltasche) für eine Item-Variante.</summary>
     public int GetTotalCount(string variantKey) =>
@@ -173,26 +197,36 @@ public class WorldData
     /// </summary>
     public IEnumerable<CharacterData> VisibleCharacters => Characters.Where(c => !c.HiddenFromTool && !c.IsArchived);
 
+    /// <summary>
+    /// Charaktere, die in die GESAMTSUMMEN eingehen. Standardmäßig sind das nur
+    /// die eigenen - importierte Charaktere anderer Spieler werden ausgeklammert,
+    /// damit "Umsatz aller Welten" der eigene Bestand bleibt. Über den Schalter
+    /// im Edit-Tab (CharacterFilter.IncludeImportedInTotals) lassen sie sich
+    /// mitzählen, z.B. um einen FC-Gesamtbestand zu sehen.
+    /// </summary>
+    public IEnumerable<CharacterData> CountedCharacters =>
+        VisibleCharacters.Where(c => CharacterFilter.IncludeImportedInTotals || !c.IsImported);
+
     public long TotalGil()
     {
         long total = 0;
-        foreach (var c in VisibleCharacters)
+        foreach (var c in CountedCharacters)
             total += c.TotalGil();
         return total;
     }
 
-    public int TotalQuantity() => VisibleCharacters.Sum(c => c.TotalQuantity());
+    public int TotalQuantity() => CountedCharacters.Sum(c => c.TotalQuantity());
 
     /// <summary>
     /// Stacks dieser Welt: für jede Item-Variante (NQ/HQ getrennt) wird die
-    /// (kombinierte Inventar+Satteltasche-)Stückzahl über alle SICHTBAREN
+    /// (kombinierte Inventar+Satteltasche-)Stückzahl über alle GEZÄHLTEN
     /// Charaktere dieser Welt aufsummiert und erst DANACH durch die
     /// item-eigene Stapelgröße geteilt und aufgerundet.
     /// </summary>
     public int TotalStacks()
     {
         var total = 0;
-        var visible = VisibleCharacters.ToList();
+        var visible = CountedCharacters.ToList();
         foreach (var item in TrackedItems.All)
         {
             foreach (var (key, _) in item.Variants())

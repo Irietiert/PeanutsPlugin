@@ -61,11 +61,13 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(PluginInterface);
+        MigrateConfiguration();
 
         // Overlay-Sprache anwenden: manuelle Überschreibung im Edit-Tab hat
         // Vorrang, sonst folgt sie der Client-Spracheinstellung
         // (Systemkonfiguration -> Andere -> Sprache/Audio).
         ApplyLanguageSetting();
+        ApplyImportSetting();
 
         scanner = new InventoryScanner(Log);
 
@@ -122,6 +124,180 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnOpenMainUi() => mainWindow.IsOpen = true;
 
+    /// <summary>Übernimmt den "Importierte mitzählen"-Schalter in den globalen Filter.</summary>
+    public void ApplyImportSetting() =>
+        CharacterFilter.IncludeImportedInTotals = Configuration.IncludeImportedInTotals;
+
+    /// <summary>
+    /// Schreibt die eigenen Bestände als Share-Datei in den Exportordner, damit
+    /// andere Spieler sie importieren können.
+    /// </summary>
+    public void ExportShareFile()
+    {
+        // Stabiler Name gewinnt: sonst würde ein Export von einem anderen Alt
+        // beim Empfänger als zweiter, eigenständiger "Spieler" ankommen.
+        var playerName = !string.IsNullOrWhiteSpace(Configuration.ShareName)
+            ? Configuration.ShareName.Trim()
+            : CurrentCharacterName;
+
+        if (string.IsNullOrWhiteSpace(playerName))
+        {
+            ChatGui.PrintError(Loc.Get(
+                "[Peanuts] Kein Charakter eingeloggt und kein Freigabe-Name gesetzt (Edit-Tab).",
+                "[Peanuts] No character logged in and no share name set (Edit tab)."));
+            return;
+        }
+
+        var path = Path.Combine(GetEffectiveExportFolder(), ShareFile.FileName);
+        try
+        {
+            ShareFile.Export(Configuration, playerName, path);
+            ChatGui.Print(Loc.Get(
+                $"[Peanuts] Share-Datei geschrieben: {path}",
+                $"[Peanuts] Share file written: {path}"));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[Peanuts] Share-Export fehlgeschlagen.");
+            ChatGui.PrintError(Loc.Get(
+                "[Peanuts] Share-Export fehlgeschlagen - ist die Datei evtl. geöffnet oder der Ordner schreibgeschützt?",
+                "[Peanuts] Share export failed - is the file open, or the folder read-only?"));
+        }
+    }
+
+    // Eine gelesene, aber noch nicht angewendete Share-Datei: wartet darauf,
+    // dass der Nutzer im UI einen Besitzer (Spitznamen) zuordnet.
+    public ShareFile.ShareData? PendingImport { get; private set; }
+    public string? PendingImportSuggestion { get; private set; }
+    public List<string> PendingImportNewCharacters { get; private set; } = new();
+
+    /// <summary>
+    /// Liest eine Share-Datei. Ist der Absender bereits einem Spitznamen
+    /// zugeordnet, wird sofort importiert. Sonst wird die Datei vorgemerkt und
+    /// das UI fragt nach dem Besitzer (<see cref="ConfirmPendingImport"/>).
+    /// </summary>
+    public void ImportShareFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            ChatGui.PrintError(Loc.Get(
+                $"[Peanuts] Keine Share-Datei gefunden: {path}",
+                $"[Peanuts] No share file found: {path}"));
+            return;
+        }
+
+        try
+        {
+            var data = ShareFile.Read(path);
+            var sender = data.Player.Trim();
+
+            // Absender schon bekannt? Dann ohne Nachfrage unter dem bereits
+            // vergebenen Spitznamen übernehmen - auch wenn neue Charaktere
+            // dazugekommen sind.
+            if (Configuration.ShareOwnerAliases.TryGetValue(sender, out var knownOwner))
+            {
+                ApplyImport(data, knownOwner);
+                return;
+            }
+
+            // Unbekannter Absender: vormerken und nachfragen. Als Vorschlag
+            // dient ein bestehender Spieler, dessen Charaktere in der Datei
+            // vorkommen (z.B. wenn er von einem anderen Alt exportiert hat).
+            PendingImport = data;
+            PendingImportSuggestion = ShareFile.SuggestOwner(Configuration, data);
+            PendingImportNewCharacters = ShareFile.NewCharacterNames(Configuration, data);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[Peanuts] Share-Import fehlgeschlagen.");
+            ChatGui.PrintError(Loc.Get(
+                "[Peanuts] Share-Import fehlgeschlagen - Datei ungültig oder nicht lesbar.",
+                "[Peanuts] Share import failed - file invalid or unreadable."));
+        }
+    }
+
+    /// <summary>Wendet den vorgemerkten Import unter dem gewählten Spitznamen an.</summary>
+    public void ConfirmPendingImport(string ownerNickname)
+    {
+        if (PendingImport == null)
+            return;
+
+        var data = PendingImport;
+        CancelPendingImport();
+        ApplyImport(data, ownerNickname);
+    }
+
+    public void CancelPendingImport()
+    {
+        PendingImport = null;
+        PendingImportSuggestion = null;
+        PendingImportNewCharacters = new List<string>();
+    }
+
+    private void ApplyImport(ShareFile.ShareData data, string ownerNickname)
+    {
+        try
+        {
+            var result = ShareFile.Apply(Configuration, data, ownerNickname);
+
+            ChatGui.Print(Loc.Get(
+                $"[Peanuts] Import von \"{result.Player}\": {result.CharactersImported} Charakter(e) übernommen.",
+                $"[Peanuts] Import from \"{result.Player}\": {result.CharactersImported} character(s) imported."));
+
+            if (result.UnknownItems > 0)
+            {
+                ChatGui.Print(Loc.Get(
+                    $"[Peanuts] Hinweis: {result.UnknownItems} Eintrag/Einträge übersprungen - diese Items trackst du selbst nicht.",
+                    $"[Peanuts] Note: {result.UnknownItems} entry/entries skipped - you don't track those items yourself."));
+            }
+
+            if (result.OwnCharactersSkipped > 0)
+            {
+                ChatGui.Print(Loc.Get(
+                    $"[Peanuts] Hinweis: {result.OwnCharactersSkipped} Charakter(e) übersprungen - die hast du selbst (eigene Scans haben Vorrang).",
+                    $"[Peanuts] Note: {result.OwnCharactersSkipped} character(s) skipped - those are your own (your own scans take precedence)."));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[Peanuts] Share-Import fehlgeschlagen.");
+            ChatGui.PrintError(Loc.Get(
+                "[Peanuts] Share-Import fehlgeschlagen - Datei ungültig oder nicht lesbar.",
+                "[Peanuts] Share import failed - file invalid or unreadable."));
+        }
+    }
+
+    /// <summary>
+    /// Einmalige Bereinigung alter Konfigurationen. Frühere Versionen haben die
+    /// Satteltasche fälschlich über die Container-GRÖSSE erkannt statt über das
+    /// IsLoaded-Flag. Dadurch wurde bei Charakteren OHNE freigeschaltete
+    /// Satteltasche "0 belegt" gespeichert, was im Overlay als "70/70 frei"
+    /// erschien. Diese Werte werden hier auf "unbekannt" (-1) zurückgesetzt.
+    /// Sie füllen sich beim nächsten Scan des jeweiligen Charakters von selbst
+    /// wieder korrekt - Gil-Stände, Item-Zählungen und der Verlauf bleiben
+    /// unangetastet.
+    /// </summary>
+    private void MigrateConfiguration()
+    {
+        if (Configuration.Version >= 2)
+            return;
+
+        foreach (var world in Configuration.Worlds.Values)
+        {
+            foreach (var character in world.Characters)
+            {
+                character.UsedSaddlebagSlots = -1;
+                character.SaddlebagCounts.Clear();
+                character.DuplicateFindKeys.Clear();
+            }
+        }
+
+        Configuration.Version = 2;
+        Configuration.Save();
+
+        Log.Information("[Peanuts] Konfiguration migriert (v2): fehlerhafte Satteltaschen-Daten zurückgesetzt.");
+    }
+
     private void OnLogin()
     {
         // Auto-Start kann im Edit-Tab abgeschaltet werden - dann bleibt das
@@ -150,9 +326,9 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// Sucht im (deutschen) Item-Sheet nach Items, deren Name den Suchtext
-    /// enthält - für den "+"-Dialog im Item-Tab. Liefert direkt alles, was
-    /// zum Anlegen eines vollständigen ItemDefinition nötig ist (NQ/HQ-Preis,
+    /// Sucht im Item-Sheet nach Items, deren deutscher ODER englischer Name den
+    /// Suchtext enthält - für den "+"-Dialog im Item-Tab. Liefert direkt alles,
+    /// was zum Anlegen eines vollständigen ItemDefinition nötig ist (NQ/HQ-Preis,
     /// Stapelgröße, englischer Name), damit keine erneute Auflösung nötig ist.
     /// Ergebnisse sind bewusst limitiert, damit die Liste übersichtlich bleibt.
     /// </summary>
@@ -174,14 +350,9 @@ public sealed class Plugin : IDalamudPlugin
             if (string.IsNullOrWhiteSpace(name))
                 continue;
 
-            if (!name.Contains(needle, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var canBeHq = row.CanBeHq;
-            var priceNq = (uint)row.PriceLow;
-            var priceHq = canBeHq ? ItemDefinition.EstimateHqPrice(priceNq) : 0;
-            var stackSize = row.StackSize > 0 ? (uint)row.StackSize : 99u;
-
+            // Englischen Namen einmal auflösen: er wird sowohl für die Suche
+            // als auch für die Anzeige gebraucht. So findet man ein Item auch
+            // dann, wenn man den (im Netz üblichen) englischen Namen eingibt.
             string? nameEn = null;
             if (englishSheet != null)
             {
@@ -189,6 +360,18 @@ public sealed class Plugin : IDalamudPlugin
                 if (englishRow != null)
                     nameEn = englishRow.Value.Name.ExtractText();
             }
+
+            var matchesDe = name.Contains(needle, StringComparison.OrdinalIgnoreCase);
+            var matchesEn = !string.IsNullOrWhiteSpace(nameEn)
+                && nameEn.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+            if (!matchesDe && !matchesEn)
+                continue;
+
+            var canBeHq = row.CanBeHq;
+            var priceNq = (uint)row.PriceLow;
+            var priceHq = canBeHq ? ItemDefinition.EstimateHqPrice(priceNq) : 0;
+            var stackSize = row.StackSize > 0 ? (uint)row.StackSize : 99u;
 
             results.Add((row.RowId, name, nameEn, canBeHq, priceNq, priceHq, stackSize));
             if (results.Count >= maxResults)
@@ -445,11 +628,13 @@ public sealed class Plugin : IDalamudPlugin
         activeCharacter.UsedSlots = result.UsedInventorySlots;
 
         // --- Satteltasche ---
-        // Nur übernehmen, wenn die Satteltasche tatsächlich geladen war.
-        // Vor dem ersten Öffnen (z.B. direkt nach dem Login) sind ihre
-        // Container leer/nicht vorhanden - würden wir dann blind 0 schreiben,
-        // ginge der zuletzt bekannte Stand verloren. Stattdessen behalten wir
-        // in diesem Fall die alten Werte und lassen die Anzeige auf "?" stehen.
+        // Nur wenn sie tatsächlich GELADEN ist, sind ihre Werte gültig. Ist sie
+        // es nicht (nicht freigeschaltet, oder in dieser Session noch nie
+        // geöffnet), gilt sie als UNBEKANNT: belegte Plätze auf -1 und Inhalte
+        // leeren, damit die Anzeige "?" zeigt. Alte Werte einfach stehen zu
+        // lassen wäre falsch - ein Charakter ohne Satteltasche würde sonst für
+        // immer einen früher fälschlich gespeicherten Stand (z.B. "70/70")
+        // behalten, der nie wieder korrigiert wird.
         if (result.SaddlebagLoaded)
         {
             foreach (var kv in result.Saddlebag)
@@ -463,15 +648,10 @@ public sealed class Plugin : IDalamudPlugin
                 changed = true;
             activeCharacter.UsedSaddlebagSlots = result.UsedSaddlebagSlots;
 
-            if (activeCharacter.SaddlebagCapacity != result.SaddlebagCapacity)
-                changed = true;
-            activeCharacter.SaddlebagCapacity = result.SaddlebagCapacity;
-
             // Doppelfund auf ITEM-Ebene: ein Item gilt als Doppelfund, sobald
             // IRGENDEINE seiner Varianten (NQ/HQ) im Hauptinventar UND (dieselbe
             // oder eine andere Variante) in der Satteltasche liegt - auch über
-            // verschiedene Qualitäten hinweg. Nur sinnvoll, wenn die Satteltasche
-            // geladen ist; sonst bleibt der letzte bekannte Doppelfund-Stand stehen.
+            // verschiedene Qualitäten hinweg.
             var newDuplicateKeys = TrackedItems.All
                 .Where(item => item.Enabled
                     && item.Variants().Any(v => result.Inventory.TryGetValue(v.CountKey, out var iq) && iq > 0)
@@ -482,6 +662,25 @@ public sealed class Plugin : IDalamudPlugin
             if (!newDuplicateKeys.SetEquals(activeCharacter.DuplicateFindKeys))
                 changed = true;
             activeCharacter.DuplicateFindKeys = newDuplicateKeys;
+        }
+        else
+        {
+            if (activeCharacter.UsedSaddlebagSlots != -1)
+                changed = true;
+            activeCharacter.UsedSaddlebagSlots = -1;
+
+            if (activeCharacter.SaddlebagCounts.Count > 0)
+            {
+                activeCharacter.SaddlebagCounts.Clear();
+                changed = true;
+            }
+
+            // Ohne Satteltaschen-Daten kann es auch keinen Doppelfund geben.
+            if (activeCharacter.DuplicateFindKeys.Count > 0)
+            {
+                activeCharacter.DuplicateFindKeys.Clear();
+                changed = true;
+            }
         }
 
         activeCharacter.LastScannedAt = DateTime.Now;
@@ -588,6 +787,7 @@ public sealed class Plugin : IDalamudPlugin
                     Timestamp = now,
                     World = world.Name,
                     Character = character.Name,
+                    Owner = character.Owner,
                     ItemCounts = character.GetCombinedCounts(),
                     TotalGil = character.TotalGil(),
                 });
@@ -700,7 +900,10 @@ public sealed class Plugin : IDalamudPlugin
 
         foreach (var world in Configuration.Worlds.Values)
         {
-            foreach (var character in world.Characters)
+            // Importierte Charaktere anderer Spieler gehören uns nicht - sie
+            // werden vom Reset nicht angetastet. Wer sie loswerden will, nutzt
+            // im Edit-Tab "Import entfernen".
+            foreach (var character in world.Characters.Where(c => !c.IsImported))
             {
                 foreach (var item in TrackedItems.All)
                 {
@@ -721,7 +924,7 @@ public sealed class Plugin : IDalamudPlugin
         var resetTime = DateTime.Now;
         foreach (var world in Configuration.Worlds.Values)
         {
-            foreach (var character in world.Characters)
+            foreach (var character in world.Characters.Where(c => !c.IsImported))
             {
                 Configuration.History.Add(new HistoryEntry
                 {
